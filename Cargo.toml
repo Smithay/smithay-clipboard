@@ -1,0 +1,11 @@
+[package]
+name = "smithay-wayland-clipboard"
+version = "0.1.0"
+authors = ["Lucas Timmins <timmins.s.lucas@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+sctk = { package = "smithay-client-toolkit", version = "0.5" }
+
+[dev-dependencies]
+andrew = "0.2"

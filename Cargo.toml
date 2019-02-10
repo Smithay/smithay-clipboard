@@ -1,5 +1,5 @@
 [package]
-name = "smithay-wayland-clipboard"
+name = "smithay-clipboard"
 version = "0.1.0"
 authors = ["Lucas Timmins <timmins.s.lucas@gmail.com>"]
 edition = "2018"

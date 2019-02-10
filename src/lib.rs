@@ -6,7 +6,7 @@
 //! ```no_run
 //!     let (display, mut event_queue) =
 //!         Display::connect_to_env().expect("Failed to connect to the wayland server.");
-//!     let mut clipboard = wayland_clipboard::WaylandClipboard::new_threaded(
+//!     let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(
 //!         display.get_display_ptr() as *mut std::ffi::c_void,
 //!     );
 //!     clipboard.store("Test data");

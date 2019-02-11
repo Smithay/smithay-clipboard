@@ -1,5 +1,5 @@
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic, Arc, Mutex};
 
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent, KeyState};
 use sctk::utils::{DoubleMemPool, MemPool};
@@ -28,6 +28,8 @@ fn main() {
         .instantiate_range(1, 6, NewProxy::implement_dummy)
         .unwrap();
 
+    let need_redraw = Arc::new(atomic::AtomicBool::new(false));
+    let need_redraw_clone = need_redraw.clone();
     let cb_contents_clone = cb_contents.clone();
     map_keyboard_auto(&seat, move |event: KbEvent, _| {
         if let KbEvent::Key {
@@ -38,6 +40,7 @@ fn main() {
         {
             if text == " " {
                 *cb_contents_clone.lock().unwrap() = dbg!(clipboard.load());
+                need_redraw_clone.store(true, atomic::Ordering::Relaxed)
             } else if text == "s" {
                 clipboard
                     .store("This is an example text thats been copied to the wayland clipboard :)");
@@ -127,6 +130,22 @@ fn main() {
             None => {}
         }
 
+        if need_redraw.swap(false, atomic::Ordering::Relaxed) {
+            if let Some(pool) = pools.pool() {
+                redraw(
+                    pool,
+                    window.surface(),
+                    dimensions,
+                    &font_data,
+                    cb_contents.lock().unwrap().clone(),
+                );
+            }
+            window
+                .surface()
+                .damage_buffer(0, 0, dimensions.0 as i32, dimensions.1 as i32);
+            window.surface().commit();
+        }
+
         event_queue.dispatch().unwrap();
     }
 }
@@ -143,7 +162,7 @@ fn redraw(
     pool.resize(4 * buf_x * buf_y)
         .expect("Failed to resize the memory pool.");
 
-    let mut buf: Vec<u8> = vec![0; 4 * buf_x * buf_y];
+    let mut buf = vec![0; 4 * buf_x * buf_y];
     let mut canvas =
         andrew::Canvas::new(&mut buf, buf_x, buf_y, 4 * buf_x, andrew::Endian::native());
 

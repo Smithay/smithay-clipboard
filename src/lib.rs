@@ -59,10 +59,10 @@ impl WaylandClipboard {
     pub fn new_threaded(display: &Display) -> Self {
         let (request_send, request_recv) = mpsc::channel::<WaylandRequest>();
         let (load_send, load_recv) = mpsc::channel();
-        let display = unsafe { display.get_display_ptr().as_mut().unwrap() };
+        let display = display.clone();
 
         std::thread::spawn(move || {
-            let (display, mut event_queue) = unsafe { Display::from_external_display(display) };
+            let mut event_queue = display.create_event_queue();
             Self::clipboard_thread(&display, &mut event_queue, request_recv, load_send);
         });
 

@@ -141,7 +141,7 @@ impl WaylandClipboard {
         let seat_map = Arc::new(Mutex::new(SeatMap::new()));
 
         let data_device_manager = Arc::new(Mutex::new(None));
-        let unimplemented_seats = Arc::new(Mutex::new(Vec::new()));
+        let mut unimplemented_seats = Vec::new();
 
         let data_device_manager_clone = data_device_manager.clone();
         let seat_map_clone = seat_map.clone();
@@ -164,7 +164,7 @@ impl WaylandClipboard {
                             &reg,
                         );
                     } else {
-                        unimplemented_seats.lock().unwrap().push((id, version));
+                        unimplemented_seats.push((id, version));
                     }
                 } else if "wl_data_device_manager" == interface.as_str() {
                     *data_device_manager_clone.lock().unwrap() = Some(
@@ -175,18 +175,14 @@ impl WaylandClipboard {
                         )
                         .unwrap(),
                     );
-                    for (id, version) in unimplemented_seats.lock().unwrap().deref() {
-                        if let Some(ref data_device_manager) =
-                            data_device_manager_clone.lock().unwrap().deref()
-                        {
-                            Self::implement_seat(
-                                *id,
-                                *version,
-                                seat_map_clone.clone(),
-                                data_device_manager,
-                                &reg,
-                            );
-                        }
+                    for (id, version) in &unimplemented_seats {
+                        Self::implement_seat(
+                            *id,
+                            *version,
+                            seat_map_clone.clone(),
+                            data_device_manager_clone.lock().unwrap().as_ref().unwrap(),
+                            &reg,
+                        );
                     }
                 }
             }
@@ -226,25 +222,20 @@ impl WaylandClipboard {
                         if let Some((device, enter_serial)) =
                             seat_map.lock().unwrap().get(&seat_name)
                         {
-                            if let Some(data_device_manager) =
-                                data_device_manager.lock().unwrap().deref()
-                            {
-                                let data_source = DataSource::new(
-                                    &data_device_manager,
-                                    &["text/plain;charset=utf-8"],
-                                    move |source_event| {
-                                        if let DataSourceEvent::Send { mut pipe, .. } = source_event
-                                        {
-                                            write!(pipe, "{}", contents).unwrap();
-                                        }
-                                    },
-                                );
-                                device
-                                    .lock()
-                                    .unwrap()
-                                    .set_selection(&Some(data_source), *enter_serial);
-                                event_queue.sync_roundtrip().unwrap();
-                            }
+                            let data_source = DataSource::new(
+                                data_device_manager.lock().unwrap().as_ref().unwrap(),
+                                &["text/plain;charset=utf-8"],
+                                move |source_event| {
+                                    if let DataSourceEvent::Send { mut pipe, .. } = source_event {
+                                        write!(pipe, "{}", contents).unwrap();
+                                    }
+                                },
+                            );
+                            device
+                                .lock()
+                                .unwrap()
+                                .set_selection(&Some(data_source), *enter_serial);
+                            event_queue.sync_roundtrip().unwrap();
                         }
                     }
                     WaylandRequest::Kill => break,

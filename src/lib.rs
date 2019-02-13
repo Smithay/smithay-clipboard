@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::ops::Deref;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -26,9 +27,11 @@ use sctk::data_device::DataDevice;
 use sctk::data_device::DataSource;
 use sctk::data_device::DataSourceEvent;
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent};
-use sctk::reexports::client::protocol::{wl_data_device_manager, wl_seat};
-use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager, NewProxy};
+use sctk::reexports::client::protocol::{wl_data_device_manager, wl_registry, wl_seat};
+use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager};
 use sctk::wayland_client::sys::client::wl_display;
+
+type SeatMap = HashMap<String, (Arc<Mutex<DataDevice>>, u32)>;
 
 enum WaylandRequest {
     Store(String, String),
@@ -88,22 +91,57 @@ impl WaylandClipboard {
         }
     }
 
+    fn implement_seat(
+        id: u32,
+        version: u32,
+        seat_map: Arc<Mutex<SeatMap>>,
+        data_device_manager: &wl_data_device_manager::WlDataDeviceManager,
+        reg: &wl_registry::WlRegistry,
+    ) {
+        let seat_name = Arc::new(Mutex::new(String::new()));
+        let seat_name_clone = seat_name.clone();
+        let seat = reg
+            .bind::<wl_seat::WlSeat, _>(version, id, move |proxy| {
+                proxy.implement_closure(
+                    move |event, _| {
+                        if let wl_seat::Event::Name { name } = event {
+                            *seat_name_clone.lock().unwrap() = name
+                        }
+                    },
+                    (),
+                )
+            })
+            .unwrap();
+        let device = Arc::new(Mutex::new(DataDevice::init_for_seat(
+            data_device_manager,
+            &seat,
+            |_| {},
+        )));
+        map_keyboard_auto(&seat, move |event, _| match event {
+            KbEvent::Enter { serial, .. } => {
+                seat_map
+                    .lock()
+                    .unwrap()
+                    .insert(seat_name.lock().unwrap().clone(), (device.clone(), serial));
+            }
+            KbEvent::Leave { .. } => {
+                seat_map.lock().unwrap().remove(&*seat_name.lock().unwrap());
+            }
+            _ => {}
+        })
+        .unwrap();
+    }
+
     fn clipboard_thread(
         display: &Display,
         event_queue: &mut EventQueue,
         request_recv: mpsc::Receiver<WaylandRequest>,
         load_send: mpsc::Sender<String>,
     ) {
-        let seat_map = Arc::new(Mutex::new(
-            HashMap::<String, (Arc<Mutex<DataDevice>>, u32)>::new(),
-        ));
+        let seat_map = Arc::new(Mutex::new(SeatMap::new()));
 
-        let manager = GlobalManager::new(display);
-
-        event_queue.sync_roundtrip().unwrap();
-        let data_device_manager: wl_data_device_manager::WlDataDeviceManager = manager
-            .instantiate_range(1, 3, NewProxy::implement_dummy)
-            .expect("Server didn't advertise `wl_data_device_manager`?!");
+        let data_device_manager = Arc::new(Mutex::new(None));
+        let unimplemented_seats = Arc::new(Mutex::new(Vec::new()));
 
         let data_device_manager_clone = data_device_manager.clone();
         let seat_map_clone = seat_map.clone();
@@ -115,43 +153,41 @@ impl WaylandClipboard {
             } = event
             {
                 if "wl_seat" == interface.as_str() && version >= 2 {
-                    let seat_name = Arc::new(Mutex::new(String::new()));
-                    let seat_name_clone = seat_name.clone();
-                    let seat = reg
-                        .bind::<wl_seat::WlSeat, _>(version, id, move |proxy| {
-                            proxy.implement_closure(
-                                move |event, _| {
-                                    if let wl_seat::Event::Name { name } = event {
-                                        *seat_name_clone.lock().unwrap() = name
-                                    }
-                                },
-                                (),
-                            )
-                        })
-                        .unwrap();
-
-                    let device = Arc::new(Mutex::new(DataDevice::init_for_seat(
-                        &data_device_manager_clone,
-                        &seat,
-                        |_| {},
-                    )));
-                    let seat_map_clone = seat_map_clone.clone();
-                    map_keyboard_auto(&seat, move |event, _| match event {
-                        KbEvent::Enter { serial, .. } => {
-                            seat_map_clone.lock().unwrap().insert(
-                                seat_name.lock().unwrap().clone(),
-                                (device.clone(), serial),
+                    if let Some(ref data_device_manager) =
+                        data_device_manager_clone.lock().unwrap().deref()
+                    {
+                        Self::implement_seat(
+                            id,
+                            version,
+                            seat_map_clone.clone(),
+                            data_device_manager,
+                            &reg,
+                        );
+                    } else {
+                        unimplemented_seats.lock().unwrap().push((id, version));
+                    }
+                } else if "wl_data_device_manager" == interface.as_str() {
+                    *data_device_manager_clone.lock().unwrap() = Some(
+                        reg.bind::<wl_data_device_manager::WlDataDeviceManager, _>(
+                            version,
+                            id,
+                            |proxy| proxy.implement_dummy(),
+                        )
+                        .unwrap(),
+                    );
+                    for (id, version) in unimplemented_seats.lock().unwrap().deref() {
+                        if let Some(ref data_device_manager) =
+                            data_device_manager_clone.lock().unwrap().deref()
+                        {
+                            Self::implement_seat(
+                                *id,
+                                *version,
+                                seat_map_clone.clone(),
+                                data_device_manager,
+                                &reg,
                             );
                         }
-                        KbEvent::Leave { .. } => {
-                            seat_map_clone
-                                .lock()
-                                .unwrap()
-                                .remove(&*seat_name.lock().unwrap());
-                        }
-                        _ => {}
-                    })
-                    .unwrap();
+                    }
                 }
             }
         });
@@ -190,20 +226,25 @@ impl WaylandClipboard {
                         if let Some((device, enter_serial)) =
                             seat_map.lock().unwrap().get(&seat_name)
                         {
-                            let data_source = DataSource::new(
-                                &data_device_manager,
-                                &["text/plain;charset=utf-8"],
-                                move |source_event| {
-                                    if let DataSourceEvent::Send { mut pipe, .. } = source_event {
-                                        write!(pipe, "{}", contents).unwrap();
-                                    }
-                                },
-                            );
-                            device
-                                .lock()
-                                .unwrap()
-                                .set_selection(&Some(data_source), *enter_serial);
-                            event_queue.sync_roundtrip().unwrap();
+                            if let Some(data_device_manager) =
+                                data_device_manager.lock().unwrap().deref()
+                            {
+                                let data_source = DataSource::new(
+                                    &data_device_manager,
+                                    &["text/plain;charset=utf-8"],
+                                    move |source_event| {
+                                        if let DataSourceEvent::Send { mut pipe, .. } = source_event
+                                        {
+                                            write!(pipe, "{}", contents).unwrap();
+                                        }
+                                    },
+                                );
+                                device
+                                    .lock()
+                                    .unwrap()
+                                    .set_selection(&Some(data_source), *enter_serial);
+                                event_queue.sync_roundtrip().unwrap();
+                            }
                         }
                     }
                     WaylandRequest::Kill => break,

@@ -27,7 +27,9 @@ use sctk::data_device::DataDevice;
 use sctk::data_device::DataSource;
 use sctk::data_device::DataSourceEvent;
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent};
-use sctk::reexports::client::protocol::{wl_data_device_manager, wl_registry, wl_seat};
+use sctk::reexports::client::protocol::{
+    wl_data_device_manager, wl_display::WlDisplay, wl_registry, wl_seat,
+};
 use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager};
 use sctk::wayland_client::sys::client::wl_display;
 
@@ -63,6 +65,10 @@ impl WaylandClipboard {
 
         std::thread::spawn(move || {
             let mut event_queue = display.create_event_queue();
+            let display = (*display)
+                .as_ref()
+                .make_wrapper(&event_queue.get_token())
+                .unwrap();
             Self::clipboard_thread(&display, &mut event_queue, request_recv, load_send);
         });
 
@@ -133,7 +139,7 @@ impl WaylandClipboard {
     }
 
     fn clipboard_thread(
-        display: &Display,
+        display: &WlDisplay,
         event_queue: &mut EventQueue,
         request_recv: mpsc::Receiver<WaylandRequest>,
         load_send: mpsc::Sender<String>,
@@ -145,7 +151,7 @@ impl WaylandClipboard {
 
         let data_device_manager_clone = data_device_manager.clone();
         let seat_map_clone = seat_map.clone();
-        GlobalManager::new_with_cb(&*display, move |event, reg| {
+        GlobalManager::new_with_cb(&display, move |event, reg| {
             if let GlobalEvent::New {
                 id,
                 ref interface,

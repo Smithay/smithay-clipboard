@@ -248,8 +248,8 @@ impl WaylandClipboard {
 
     /// Returns text from the wayland clipboard
     ///
-    /// Only works when the window connected to the WlDisplay has
-    /// keyboard focus
+    /// Must be provided with a seat name and that seat must be in
+    /// focus to work
     pub fn load<S: Into<String>>(&mut self, seat_name: S) -> String {
         self.request_send
             .send(WaylandRequest::Load(seat_name.into()))
@@ -259,8 +259,8 @@ impl WaylandClipboard {
 
     /// Stores text in the wayland clipboard
     ///
-    /// Only works when the window connected to the WlDisplay has
-    /// keyboard focus
+    /// Must be provided with a seat name and that seat must be in
+    /// focus to work
     pub fn store<S: Into<String>>(&mut self, seat_name: S, text: S) {
         self.request_send
             .send(WaylandRequest::Store(seat_name.into(), text.into()))

@@ -6,7 +6,7 @@ use sctk::utils::{DoubleMemPool, MemPool};
 use sctk::window::{ConceptFrame, Event as WEvent, Window};
 use sctk::Environment;
 
-use sctk::reexports::client::protocol::{wl_shm, wl_surface};
+use sctk::reexports::client::protocol::{wl_seat, wl_shm, wl_surface};
 use sctk::reexports::client::{Display, NewProxy};
 
 use andrew::shapes::rectangle;
@@ -18,14 +18,23 @@ fn main() {
         Display::connect_to_env().expect("Failed to connect to the wayland server.");
     let env = Environment::from_display(&*display, &mut event_queue).unwrap();
 
-    let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(
-        display.get_display_ptr() as *mut std::ffi::c_void,
-    );
+    let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(&display);
     let cb_contents = Arc::new(Mutex::new(String::new()));
 
+    let seat_name = Arc::new(Mutex::new(String::new()));
+    let seat_name_clone = seat_name.clone();
     let seat = env
         .manager
-        .instantiate_range(1, 6, NewProxy::implement_dummy)
+        .instantiate_range(2, 6, move |proxy| {
+            proxy.implement_closure(
+                move |event, _| {
+                    if let wl_seat::Event::Name { name } = event {
+                        *seat_name_clone.lock().unwrap() = name
+                    }
+                },
+                (),
+            )
+        })
         .unwrap();
 
     let need_redraw = Arc::new(atomic::AtomicBool::new(false));
@@ -39,11 +48,15 @@ fn main() {
         } = event
         {
             if text == " " {
-                *cb_contents_clone.lock().unwrap() = dbg!(clipboard.load());
+                *cb_contents_clone.lock().unwrap() =
+                    dbg!(clipboard.load(seat_name.lock().unwrap().clone()));
                 need_redraw_clone.store(true, atomic::Ordering::Relaxed)
             } else if text == "s" {
-                clipboard
-                    .store("This is an example text thats been copied to the wayland clipboard :)");
+                clipboard.store(
+                    seat_name.lock().unwrap().clone(),
+                    "This is an example text thats been copied to the wayland clipboard :)"
+                        .to_string(),
+                );
             }
         }
     })

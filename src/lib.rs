@@ -1,16 +1,14 @@
-//! Smithay Wayland Clipboard
+//! Smithay Clipboard
 //!
 //! Provides access to the wayland clipboard with only requirement being a WlDisplay
 //! object
 //!
 //! ```no_run
-//!     let (display, mut event_queue) =
-//!         Display::connect_to_env().expect("Failed to connect to the wayland server.");
-//!     let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(
-//!         display.get_display_ptr() as *mut std::ffi::c_void,
-//!     );
-//!     clipboard.store("Test data");
-//!     println!(clipboard.load());
+//! let (display, _) =
+//! Display::connect_to_env().expect("Failed to connect to the wayland server.");
+//! let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(&display);
+//! clipboard.store("seat0", "Test data");
+//! println!("{}", clipboard.load("seat0"));
 //! ```
 
 #![warn(missing_docs)]

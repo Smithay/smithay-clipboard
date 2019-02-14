@@ -1,6 +1,6 @@
 # Contributing
 
-Smithay Wayland Clipboard is open to contributions from anyone.
+Smithay Clipboard is open to contributions from anyone.
 
 ## Smithay Project
 

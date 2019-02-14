@@ -51,6 +51,8 @@ script:
         cargo fmt -- --check
       elif [ -n "$BUILD_DOC" ]; then
         cargo doc --no-deps --all-features
+      else
+        cargo check
       fi
 after_success:
   - |

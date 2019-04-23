@@ -228,6 +228,7 @@ impl WaylandClipboard {
                 }
             }
         });
+        event_queue.sync_roundtrip().unwrap();
 
         loop {
             if let Ok(request) = request_recv.try_recv() {

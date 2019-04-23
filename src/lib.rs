@@ -21,15 +21,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
-use sctk::data_device::DataDevice;
-use sctk::data_device::DataSource;
-use sctk::data_device::DataSourceEvent;
+use sctk::data_device::{DataDevice, DataSource, DataSourceEvent};
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent};
 use sctk::reexports::client::protocol::wl_pointer::Event as PtrEvent;
 use sctk::reexports::client::protocol::{
     wl_data_device_manager, wl_display::WlDisplay, wl_registry, wl_seat,
 };
-use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager};
+use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager, NewProxy};
 use sctk::wayland_client::sys::client::wl_display;
 
 type SeatMap = HashMap<String, (Arc<Mutex<DataDevice>>, u32)>;
@@ -212,7 +210,7 @@ impl WaylandClipboard {
                         reg.bind::<wl_data_device_manager::WlDataDeviceManager, _>(
                             version,
                             id,
-                            |proxy| proxy.implement_dummy(),
+                            NewProxy::implement_dummy,
                         )
                         .unwrap(),
                     );

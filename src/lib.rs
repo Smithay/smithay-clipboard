@@ -25,6 +25,7 @@ use sctk::data_device::DataDevice;
 use sctk::data_device::DataSource;
 use sctk::data_device::DataSourceEvent;
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent};
+use sctk::reexports::client::protocol::wl_pointer::Event as PtrEvent;
 use sctk::reexports::client::protocol::{
     wl_data_device_manager, wl_display::WlDisplay, wl_registry, wl_seat,
 };
@@ -121,17 +122,53 @@ impl WaylandClipboard {
             &seat,
             |_| {},
         )));
+        let seat_map_clone = seat_map.clone();
+        let device_clone = device.clone();
+        let seat_name_clone = seat_name.clone();
         map_keyboard_auto(&seat, move |event, _| match event {
             KbEvent::Enter { serial, .. } => {
-                seat_map
-                    .lock()
-                    .unwrap()
-                    .insert(seat_name.lock().unwrap().clone(), (device.clone(), serial));
+                seat_map_clone.lock().unwrap().insert(
+                    seat_name_clone.lock().unwrap().clone(),
+                    (device_clone.clone(), serial),
+                );
+            }
+            KbEvent::Key { serial, .. } => {
+                seat_map_clone.lock().unwrap().insert(
+                    seat_name_clone.lock().unwrap().clone(),
+                    (device_clone.clone(), serial),
+                );
             }
             KbEvent::Leave { .. } => {
-                seat_map.lock().unwrap().remove(&*seat_name.lock().unwrap());
+                seat_map_clone
+                    .lock()
+                    .unwrap()
+                    .remove(&*seat_name_clone.lock().unwrap());
             }
             _ => {}
+        })
+        .unwrap();
+        seat.get_pointer(|pointer| {
+            pointer.implement_closure(
+                move |evt, _| match evt {
+                    PtrEvent::Enter { serial, .. } => {
+                        seat_map
+                            .lock()
+                            .unwrap()
+                            .insert(seat_name.lock().unwrap().clone(), (device.clone(), serial));
+                    }
+                    PtrEvent::Button { serial, .. } => {
+                        seat_map
+                            .lock()
+                            .unwrap()
+                            .insert(seat_name.lock().unwrap().clone(), (device.clone(), serial));
+                    }
+                    PtrEvent::Leave { .. } => {
+                        seat_map.lock().unwrap().remove(&*seat_name.lock().unwrap());
+                    }
+                    _ => {}
+                },
+                (),
+            )
         })
         .unwrap();
     }
@@ -196,7 +233,8 @@ impl WaylandClipboard {
             if let Ok(request) = request_recv.try_recv() {
                 match request {
                     WaylandRequest::Load(seat_name) => {
-                        if let Some((device, _)) = seat_map.lock().unwrap().get(&seat_name) {
+                        let seat_map = seat_map.lock().unwrap().clone();
+                        if let Some((device, _)) = seat_map.get(&seat_name) {
                             // Load
                             let mut reader = None;
                             device.lock().unwrap().with_selection(|offer| {
@@ -225,9 +263,8 @@ impl WaylandClipboard {
                         }
                     }
                     WaylandRequest::Store(seat_name, contents) => {
-                        if let Some((device, enter_serial)) =
-                            seat_map.lock().unwrap().get(&seat_name)
-                        {
+                        let seat_map = seat_map.lock().unwrap().clone();
+                        if let Some((device, enter_serial)) = seat_map.get(&seat_name) {
                             let data_source = DataSource::new(
                                 data_device_manager.lock().unwrap().as_ref().unwrap(),
                                 &["text/plain;charset=utf-8"],

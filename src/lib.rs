@@ -218,8 +218,10 @@ impl WaylandClipboard {
                                 reader.read_to_string(&mut contents).unwrap();
                                 load_send.send(contents).unwrap();
                             } else {
-                                load_send.send("".to_string()).unwrap();
+                                load_send.send(String::new()).unwrap();
                             }
+                        } else {
+                            load_send.send(String::new()).unwrap();
                         }
                     }
                     WaylandRequest::Store(seat_name, contents) => {

@@ -33,8 +33,8 @@ use sctk::wayland_client::sys::client::wl_display;
 type SeatMap = HashMap<String, (Arc<Mutex<DataDevice>>, u32)>;
 
 enum WaylandRequest {
-    Store(String, String),
-    Load(String),
+    Store(Option<String>, String),
+    Load(Option<String>),
     Kill,
 }
 
@@ -42,7 +42,6 @@ enum WaylandRequest {
 pub struct WaylandClipboard {
     request_send: mpsc::Sender<WaylandRequest>,
     load_recv: mpsc::Receiver<String>,
-    last_seat_name: Arc<Mutex<String>>,
 }
 
 impl Drop for WaylandClipboard {
@@ -60,28 +59,19 @@ impl WaylandClipboard {
         let (request_send, request_recv) = mpsc::channel::<WaylandRequest>();
         let (load_send, load_recv) = mpsc::channel();
         let display = display.clone();
-        let last_seat_name = Arc::new(Mutex::new(String::new()));
 
-        let last_seat_name_clone = last_seat_name.clone();
         std::thread::spawn(move || {
             let mut event_queue = display.create_event_queue();
             let display = (*display)
                 .as_ref()
                 .make_wrapper(&event_queue.get_token())
                 .unwrap();
-            Self::clipboard_thread(
-                &display,
-                &mut event_queue,
-                request_recv,
-                load_send,
-                last_seat_name_clone,
-            );
+            Self::clipboard_thread(&display, &mut event_queue, request_recv, load_send);
         });
 
         WaylandClipboard {
             request_send,
             load_recv,
-            last_seat_name,
         }
     }
 
@@ -93,24 +83,15 @@ impl WaylandClipboard {
         let (request_send, request_recv) = mpsc::channel::<WaylandRequest>();
         let (load_send, load_recv) = mpsc::channel();
         let display = display_ptr.as_mut().unwrap();
-        let last_seat_name = Arc::new(Mutex::new(String::new()));
 
-        let last_seat_name_clone = last_seat_name.clone();
         std::thread::spawn(move || {
             let (display, mut event_queue) = Display::from_external_display(display);
-            Self::clipboard_thread(
-                &display,
-                &mut event_queue,
-                request_recv,
-                load_send,
-                last_seat_name_clone,
-            );
+            Self::clipboard_thread(&display, &mut event_queue, request_recv, load_send);
         });
 
         WaylandClipboard {
             request_send,
             load_recv,
-            last_seat_name,
         }
     }
 
@@ -204,7 +185,6 @@ impl WaylandClipboard {
         event_queue: &mut EventQueue,
         request_recv: mpsc::Receiver<WaylandRequest>,
         load_send: mpsc::Sender<String>,
-        last_seat_name: Arc<Mutex<String>>,
     ) {
         let seat_map = Arc::new(Mutex::new(SeatMap::new()));
 
@@ -213,6 +193,7 @@ impl WaylandClipboard {
 
         let data_device_manager_clone = data_device_manager.clone();
         let seat_map_clone = seat_map.clone();
+        let last_seat_name = Arc::new(Mutex::new(String::new()));
         let last_seat_name_clone = last_seat_name.clone();
         GlobalManager::new_with_cb(&display, move |event, reg| {
             if let GlobalEvent::New {
@@ -264,8 +245,13 @@ impl WaylandClipboard {
             if let Ok(request) = request_recv.try_recv() {
                 match request {
                     WaylandRequest::Load(seat_name) => {
+                        event_queue.sync_roundtrip().unwrap();
                         let seat_map = seat_map.lock().unwrap().clone();
-                        if let Some((device, _)) = seat_map.get(&seat_name) {
+                        if let Some((device, _)) =
+                            seat_map
+                                .get(&dbg!(seat_name
+                                    .unwrap_or_else(|| last_seat_name.lock().unwrap().clone())))
+                        {
                             // Load
                             let mut reader = None;
                             device.lock().unwrap().with_selection(|offer| {
@@ -294,8 +280,13 @@ impl WaylandClipboard {
                         }
                     }
                     WaylandRequest::Store(seat_name, contents) => {
+                        event_queue.sync_roundtrip().unwrap();
                         let seat_map = seat_map.lock().unwrap().clone();
-                        if let Some((device, enter_serial)) = seat_map.get(&seat_name) {
+                        if let Some((device, enter_serial)) =
+                            seat_map
+                                .get(&dbg!(seat_name
+                                    .unwrap_or_else(|| last_seat_name.lock().unwrap().clone())))
+                        {
                             let data_source = DataSource::new(
                                 data_device_manager.lock().unwrap().as_ref().unwrap(),
                                 &["text/plain;charset=utf-8"],
@@ -328,9 +319,7 @@ impl WaylandClipboard {
     /// is used
     pub fn load(&mut self, seat_name: Option<String>) -> String {
         self.request_send
-            .send(WaylandRequest::Load(seat_name.unwrap_or_else(|| {
-                self.last_seat_name.lock().unwrap().clone()
-            })))
+            .send(WaylandRequest::Load(seat_name))
             .unwrap();
         self.load_recv.recv().unwrap()
     }
@@ -343,10 +332,7 @@ impl WaylandClipboard {
     /// is used
     pub fn store(&mut self, seat_name: Option<String>, text: String) {
         self.request_send
-            .send(WaylandRequest::Store(
-                seat_name.unwrap_or_else(|| self.last_seat_name.lock().unwrap().clone()),
-                text,
-            ))
+            .send(WaylandRequest::Store(seat_name, text))
             .unwrap()
     }
 }

@@ -42,6 +42,7 @@ enum WaylandRequest {
 pub struct WaylandClipboard {
     request_send: mpsc::Sender<WaylandRequest>,
     load_recv: mpsc::Receiver<String>,
+    last_seat_name: Arc<Mutex<String>>,
 }
 
 impl Drop for WaylandClipboard {
@@ -59,19 +60,28 @@ impl WaylandClipboard {
         let (request_send, request_recv) = mpsc::channel::<WaylandRequest>();
         let (load_send, load_recv) = mpsc::channel();
         let display = display.clone();
+        let last_seat_name = Arc::new(Mutex::new(String::new()));
 
+        let last_seat_name_clone = last_seat_name.clone();
         std::thread::spawn(move || {
             let mut event_queue = display.create_event_queue();
             let display = (*display)
                 .as_ref()
                 .make_wrapper(&event_queue.get_token())
                 .unwrap();
-            Self::clipboard_thread(&display, &mut event_queue, request_recv, load_send);
+            Self::clipboard_thread(
+                &display,
+                &mut event_queue,
+                request_recv,
+                load_send,
+                last_seat_name_clone,
+            );
         });
 
         WaylandClipboard {
             request_send,
             load_recv,
+            last_seat_name,
         }
     }
 
@@ -83,14 +93,24 @@ impl WaylandClipboard {
         let (request_send, request_recv) = mpsc::channel::<WaylandRequest>();
         let (load_send, load_recv) = mpsc::channel();
         let display = display_ptr.as_mut().unwrap();
+        let last_seat_name = Arc::new(Mutex::new(String::new()));
+
+        let last_seat_name_clone = last_seat_name.clone();
         std::thread::spawn(move || {
             let (display, mut event_queue) = Display::from_external_display(display);
-            Self::clipboard_thread(&display, &mut event_queue, request_recv, load_send);
+            Self::clipboard_thread(
+                &display,
+                &mut event_queue,
+                request_recv,
+                load_send,
+                last_seat_name_clone,
+            );
         });
 
         WaylandClipboard {
             request_send,
             load_recv,
+            last_seat_name,
         }
     }
 
@@ -98,6 +118,7 @@ impl WaylandClipboard {
         id: u32,
         version: u32,
         seat_map: Arc<Mutex<SeatMap>>,
+        last_seat_name: Arc<Mutex<String>>,
         data_device_manager: &wl_data_device_manager::WlDataDeviceManager,
         reg: &wl_registry::WlRegistry,
     ) {
@@ -123,47 +144,54 @@ impl WaylandClipboard {
         let seat_map_clone = seat_map.clone();
         let device_clone = device.clone();
         let seat_name_clone = seat_name.clone();
-        map_keyboard_auto(&seat, move |event, _| match event {
-            KbEvent::Enter { serial, .. } => {
-                seat_map_clone.lock().unwrap().insert(
-                    seat_name_clone.lock().unwrap().clone(),
-                    (device_clone.clone(), serial),
-                );
+        let last_seat_name_clone = last_seat_name.clone();
+        map_keyboard_auto(&seat, move |event, _| {
+            *last_seat_name_clone.lock().unwrap() = seat_name_clone.lock().unwrap().clone();
+            match event {
+                KbEvent::Enter { serial, .. } => {
+                    seat_map_clone.lock().unwrap().insert(
+                        seat_name_clone.lock().unwrap().clone(),
+                        (device_clone.clone(), serial),
+                    );
+                }
+                KbEvent::Key { serial, .. } => {
+                    seat_map_clone.lock().unwrap().insert(
+                        seat_name_clone.lock().unwrap().clone(),
+                        (device_clone.clone(), serial),
+                    );
+                }
+                KbEvent::Leave { .. } => {
+                    seat_map_clone
+                        .lock()
+                        .unwrap()
+                        .remove(&*seat_name_clone.lock().unwrap());
+                }
+                _ => {}
             }
-            KbEvent::Key { serial, .. } => {
-                seat_map_clone.lock().unwrap().insert(
-                    seat_name_clone.lock().unwrap().clone(),
-                    (device_clone.clone(), serial),
-                );
-            }
-            KbEvent::Leave { .. } => {
-                seat_map_clone
-                    .lock()
-                    .unwrap()
-                    .remove(&*seat_name_clone.lock().unwrap());
-            }
-            _ => {}
         })
         .unwrap();
         seat.get_pointer(|pointer| {
             pointer.implement_closure(
-                move |evt, _| match evt {
-                    PtrEvent::Enter { serial, .. } => {
-                        seat_map
-                            .lock()
-                            .unwrap()
-                            .insert(seat_name.lock().unwrap().clone(), (device.clone(), serial));
+                move |evt, _| {
+                    *last_seat_name.lock().unwrap() = seat_name.lock().unwrap().clone();
+                    match evt {
+                        PtrEvent::Enter { serial, .. } => {
+                            seat_map.lock().unwrap().insert(
+                                seat_name.lock().unwrap().clone(),
+                                (device.clone(), serial),
+                            );
+                        }
+                        PtrEvent::Button { serial, .. } => {
+                            seat_map.lock().unwrap().insert(
+                                seat_name.lock().unwrap().clone(),
+                                (device.clone(), serial),
+                            );
+                        }
+                        PtrEvent::Leave { .. } => {
+                            seat_map.lock().unwrap().remove(&*seat_name.lock().unwrap());
+                        }
+                        _ => {}
                     }
-                    PtrEvent::Button { serial, .. } => {
-                        seat_map
-                            .lock()
-                            .unwrap()
-                            .insert(seat_name.lock().unwrap().clone(), (device.clone(), serial));
-                    }
-                    PtrEvent::Leave { .. } => {
-                        seat_map.lock().unwrap().remove(&*seat_name.lock().unwrap());
-                    }
-                    _ => {}
                 },
                 (),
             )
@@ -176,6 +204,7 @@ impl WaylandClipboard {
         event_queue: &mut EventQueue,
         request_recv: mpsc::Receiver<WaylandRequest>,
         load_send: mpsc::Sender<String>,
+        last_seat_name: Arc<Mutex<String>>,
     ) {
         let seat_map = Arc::new(Mutex::new(SeatMap::new()));
 
@@ -184,6 +213,7 @@ impl WaylandClipboard {
 
         let data_device_manager_clone = data_device_manager.clone();
         let seat_map_clone = seat_map.clone();
+        let last_seat_name_clone = last_seat_name.clone();
         GlobalManager::new_with_cb(&display, move |event, reg| {
             if let GlobalEvent::New {
                 id,
@@ -199,6 +229,7 @@ impl WaylandClipboard {
                             id,
                             version,
                             seat_map_clone.clone(),
+                            last_seat_name_clone.clone(),
                             data_device_manager,
                             &reg,
                         );
@@ -219,6 +250,7 @@ impl WaylandClipboard {
                             *id,
                             *version,
                             seat_map_clone.clone(),
+                            last_seat_name_clone.clone(),
                             data_device_manager_clone.lock().unwrap().as_ref().unwrap(),
                             &reg,
                         );
@@ -292,9 +324,11 @@ impl WaylandClipboard {
     ///
     /// Must be provided with a seat name and that seat must be in
     /// focus to work
-    pub fn load<S: Into<String>>(&mut self, seat_name: S) -> String {
+    pub fn load(&mut self, seat_name: Option<String>) -> String {
         self.request_send
-            .send(WaylandRequest::Load(seat_name.into()))
+            .send(WaylandRequest::Load(seat_name.unwrap_or_else(|| {
+                self.last_seat_name.lock().unwrap().clone()
+            })))
             .unwrap();
         self.load_recv.recv().unwrap()
     }
@@ -303,9 +337,12 @@ impl WaylandClipboard {
     ///
     /// Must be provided with a seat name and that seat must be in
     /// focus to work
-    pub fn store<S: Into<String>>(&mut self, seat_name: S, text: S) {
+    pub fn store(&mut self, seat_name: Option<String>, text: String) {
         self.request_send
-            .send(WaylandRequest::Store(seat_name.into(), text.into()))
+            .send(WaylandRequest::Store(
+                seat_name.unwrap_or_else(|| self.last_seat_name.lock().unwrap().clone()),
+                text,
+            ))
             .unwrap()
     }
 }

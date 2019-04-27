@@ -7,8 +7,8 @@
 //! let (display, _) =
 //! Display::connect_to_env().expect("Failed to connect to the wayland server.");
 //! let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(&display);
-//! clipboard.store("seat0", "Test data");
-//! println!("{}", clipboard.load("seat0"));
+//! clipboard.store(None, "Test data");
+//! println!("{}", clipboard.load(None));
 //! ```
 
 #![warn(missing_docs)]
@@ -322,8 +322,10 @@ impl WaylandClipboard {
 
     /// Returns text from the wayland clipboard
     ///
-    /// Must be provided with a seat name and that seat must be in
-    /// focus to work
+    /// If provided with a seat name that seat must be in
+    /// focus to work. Otherwise if no seat name is provided
+    /// the name of the seat to last generate a key or pointer event
+    /// is used
     pub fn load(&mut self, seat_name: Option<String>) -> String {
         self.request_send
             .send(WaylandRequest::Load(seat_name.unwrap_or_else(|| {
@@ -335,8 +337,10 @@ impl WaylandClipboard {
 
     /// Stores text in the wayland clipboard
     ///
-    /// Must be provided with a seat name and that seat must be in
-    /// focus to work
+    /// If provided with a seat name that seat must be in
+    /// focus to work. Otherwise if no seat name is provided
+    /// the name of the seat to last generate a key or pointer event
+    /// is used
     pub fn store(&mut self, seat_name: Option<String>, text: String) {
         self.request_send
             .send(WaylandRequest::Store(

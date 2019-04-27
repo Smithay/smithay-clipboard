@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.1 -- 2019-04-27
+
+- Remove dbg! macro from code
+
 ## 0.2.0 -- 2019-04-27
 
 - `Clipboard::store()` and `Clipboard::load()` now take a `Option<String>` for the seat name, if

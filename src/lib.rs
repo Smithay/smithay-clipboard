@@ -247,11 +247,9 @@ impl WaylandClipboard {
                     WaylandRequest::Load(seat_name) => {
                         event_queue.sync_roundtrip().unwrap();
                         let seat_map = seat_map.lock().unwrap().clone();
-                        if let Some((device, _)) =
-                            seat_map
-                                .get(&dbg!(seat_name
-                                    .unwrap_or_else(|| last_seat_name.lock().unwrap().clone())))
-                        {
+                        if let Some((device, _)) = seat_map.get(
+                            &seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
+                        ) {
                             // Load
                             let mut reader = None;
                             device.lock().unwrap().with_selection(|offer| {
@@ -282,11 +280,9 @@ impl WaylandClipboard {
                     WaylandRequest::Store(seat_name, contents) => {
                         event_queue.sync_roundtrip().unwrap();
                         let seat_map = seat_map.lock().unwrap().clone();
-                        if let Some((device, enter_serial)) =
-                            seat_map
-                                .get(&dbg!(seat_name
-                                    .unwrap_or_else(|| last_seat_name.lock().unwrap().clone())))
-                        {
+                        if let Some((device, enter_serial)) = seat_map.get(
+                            &seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
+                        ) {
                             let data_source = DataSource::new(
                                 data_device_manager.lock().unwrap().as_ref().unwrap(),
                                 &["text/plain;charset=utf-8"],

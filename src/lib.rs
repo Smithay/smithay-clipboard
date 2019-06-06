@@ -14,5 +14,5 @@
 #![warn(missing_docs)]
 
 mod threaded;
-pub use threaded::ThreadedClipboard;
-pub use threaded::ThreadedClipboard as WaylandClipboard;
+pub use crate::threaded::ThreadedClipboard;
+pub use crate::threaded::ThreadedClipboard as WaylandClipboard;

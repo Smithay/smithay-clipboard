@@ -18,7 +18,7 @@ fn main() {
         Display::connect_to_env().expect("Failed to connect to the wayland server.");
     let env = Environment::from_display(&*display, &mut event_queue).unwrap();
 
-    let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(&display);
+    let mut clipboard = smithay_clipboard::WaylandClipboard::new(&display);
     let cb_contents = Arc::new(Mutex::new(String::new()));
 
     let seat = env

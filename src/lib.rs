@@ -6,7 +6,7 @@
 //! ```no_run
 //! let (display, _) =
 //! Display::connect_to_env().expect("Failed to connect to the wayland server.");
-//! let mut clipboard = smithay_clipboard::WaylandClipboard::new_threaded(&display);
+//! let mut clipboard = smithay_clipboard::WaylandClipboard::new(&display);
 //! clipboard.store(None, "Test data");
 //! println!("{}", clipboard.load(None));
 //! ```

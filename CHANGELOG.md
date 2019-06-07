@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.0 -- 2019-06-07
+
+- Add support for primary selection through `store_primary()` and `load_primary()`
+
 ## 0.2.1 -- 2019-04-27
 
 - Remove dbg! macro from code

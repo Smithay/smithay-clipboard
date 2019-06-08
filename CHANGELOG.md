@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.1 -- 2019-06-08
+
+- Fix primary clipboard storing
+
 ## 0.3.0 -- 2019-06-07
 
 - Add support for primary selection through `store_primary()` and `load_primary()`

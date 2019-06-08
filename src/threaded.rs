@@ -370,6 +370,9 @@ fn clipboard_thread(
                                         (),
                                     )
                                 });
+                                if let Ok(source) = &source {
+                                    source.offer("text/plain;charset=utf-8".to_string());
+                                }
                                 primary_device.set_selection(source.ok().as_ref(), *enter_serial);
                             }
                         }

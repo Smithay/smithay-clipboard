@@ -3,7 +3,7 @@
 //! Provides access to the wayland clipboard with only requirement being a WlDisplay
 //! object
 //!
-//! ```no_run
+//! ```norun
 //! let (display, _) =
 //! Display::connect_to_env().expect("Failed to connect to the wayland server.");
 //! let mut clipboard = smithay_clipboard::WaylandClipboard::new(&display);

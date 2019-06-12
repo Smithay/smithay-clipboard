@@ -118,9 +118,12 @@ impl ThreadedClipboard {
     /// focus to work. Otherwise if no seat name is provided
     /// the name of the seat to last generate a key or pointer event
     /// is used
-    pub fn store(&mut self, seat_name: Option<String>, text: String) {
+    pub fn store<T>(&mut self, seat_name: Option<String>, text: T)
+    where
+        T: Into<String>,
+    {
         self.request_send
-            .send(ThreadRequest::Store(seat_name, text))
+            .send(ThreadRequest::Store(seat_name, text.into()))
             .unwrap()
     }
 

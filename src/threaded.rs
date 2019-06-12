@@ -120,7 +120,7 @@ impl ThreadedClipboard {
     /// is used
     pub fn store<T>(&mut self, seat_name: Option<String>, text: T)
     where
-        T: Into<String>
+        T: Into<String>,
     {
         self.request_send
             .send(ThreadRequest::Store(seat_name, text.into()))

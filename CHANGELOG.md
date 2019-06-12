@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.2 -- 2019-06-13
+
+- Update smithay-client-toolkit version to 0.6.1
+
 ## 0.3.1 -- 2019-06-08
 
 - Fix primary clipboard storing

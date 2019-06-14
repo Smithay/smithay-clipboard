@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.3 -- 2019-06-14
+
+- Update nix version to 0.14.1
+
 ## 0.3.2 -- 2019-06-13
 
 - Update smithay-client-toolkit version to 0.6.1

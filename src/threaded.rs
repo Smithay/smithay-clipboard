@@ -257,10 +257,10 @@ fn clipboard_thread(
     // Thread loop to handle requests and dispatch the event queue
     loop {
         if let Ok(request) = request_recv.try_recv() {
+            event_queue.sync_roundtrip().unwrap();
             match request {
                 // Load text from clipboard
                 ThreadRequest::Load(seat_name) => {
-                    event_queue.sync_roundtrip().unwrap();
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the clipboard contents of the requested seat from the seat map
@@ -292,7 +292,6 @@ fn clipboard_thread(
                 }
                 // Store text in the clipboard
                 ThreadRequest::Store(seat_name, contents) => {
-                    event_queue.sync_roundtrip().unwrap();
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the requested seat from the seat map
@@ -312,13 +311,10 @@ fn clipboard_thread(
                             .lock()
                             .unwrap()
                             .set_selection(&Some(data_source), *enter_serial);
-
-                        event_queue.sync_roundtrip().unwrap();
                     }
                 }
                 // Load text from primary clipboard
                 ThreadRequest::LoadPrimary(seat_name) => {
-                    event_queue.sync_roundtrip().unwrap();
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the primary clipboard contents of the requested seat from the seat map
@@ -345,7 +341,6 @@ fn clipboard_thread(
                 }
                 // Store text in the primary clipboard
                 ThreadRequest::StorePrimary(seat_name, contents) => {
-                    event_queue.sync_roundtrip().unwrap();
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the requested seat from the seat map
@@ -385,6 +380,7 @@ fn clipboard_thread(
             }
         }
         // Dispatch the event queue and block for 50 milliseconds
+        event_queue.sync_roundtrip().unwrap();
         event_queue.dispatch_pending().unwrap();
         sleep(Duration::from_millis(50));
     }

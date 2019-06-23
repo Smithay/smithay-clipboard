@@ -378,9 +378,9 @@ fn clipboard_thread(
                 }
                 ThreadRequest::Kill => break,
             }
+            event_queue.sync_roundtrip().unwrap();
         }
         // Dispatch the event queue and block for 50 milliseconds
-        event_queue.sync_roundtrip().unwrap();
         event_queue.dispatch_pending().unwrap();
         sleep(Duration::from_millis(50));
     }

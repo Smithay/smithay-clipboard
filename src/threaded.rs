@@ -13,8 +13,7 @@ use nix::unistd::{close, pipe2};
 use sctk::data_device::{DataDevice, DataSource, DataSourceEvent};
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent};
 use sctk::reexports::client::protocol::{
-    wl_data_device_manager, wl_display::WlDisplay, wl_pointer::Event as PtrEvent, wl_registry,
-    wl_seat,
+    wl_data_device_manager, wl_pointer::Event as PtrEvent, wl_registry, wl_seat,
 };
 use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager, NewProxy};
 use sctk::reexports::protocols::unstable::primary_selection::v1::client::{
@@ -64,12 +63,7 @@ impl ThreadedClipboard {
 
         // Spawn a thread to handle the clipboard as regular dispatching of the wayland thread is needed
         std::thread::spawn(move || {
-            let mut event_queue = display.create_event_queue();
-            let display = (*display)
-                .as_ref()
-                .make_wrapper(&event_queue.get_token())
-                .unwrap();
-            clipboard_thread(&display, &mut event_queue, request_recv, load_send);
+            clipboard_thread(&display, None, request_recv, load_send);
         });
 
         ThreadedClipboard {
@@ -89,8 +83,8 @@ impl ThreadedClipboard {
 
         // Spawn a thread to handle the clipboard as regular dispatching of the wayland thread is needed
         std::thread::spawn(move || {
-            let (display, mut event_queue) = Display::from_external_display(display);
-            clipboard_thread(&display, &mut event_queue, request_recv, load_send);
+            let (display, event_queue) = Display::from_external_display(display);
+            clipboard_thread(&display, Some(event_queue), request_recv, load_send);
         });
 
         ThreadedClipboard {
@@ -169,11 +163,22 @@ enum ThreadRequest {
 
 /// Handles the setup and running of the clipboard thread
 fn clipboard_thread(
-    display: &WlDisplay,
-    event_queue: &mut EventQueue,
+    display: &Display,
+    event_queue: Option<EventQueue>,
     request_recv: mpsc::Receiver<ThreadRequest>,
     load_send: mpsc::Sender<String>,
 ) {
+    let (wl_display, mut event_queue) = if let Some(event_queue) = event_queue {
+        (display.deref().clone(), event_queue)
+    } else {
+        let event_queue = display.create_event_queue();
+        let display = (*display)
+            .as_ref()
+            .make_wrapper(&event_queue.get_token())
+            .unwrap();
+        (display, event_queue)
+    };
+
     // Create a seat map to register seats
     let seat_map = Arc::new(Mutex::new(SeatMap::new()));
 
@@ -192,7 +197,7 @@ fn clipboard_thread(
     let last_seat_name_clone = last_seat_name.clone();
 
     // Register wl_seat objects and wl_data_device_manager
-    GlobalManager::new_with_cb(&display, move |event, reg| {
+    GlobalManager::new_with_cb(&wl_display, move |event, reg| {
         if let GlobalEvent::New {
             id,
             ref interface,
@@ -282,6 +287,7 @@ fn clipboard_thread(
                                 }
                             });
                             event_queue.sync_roundtrip().unwrap();
+                            display.flush().unwrap();
                             reader.map_or(String::new(), |mut reader| {
                                 let mut contents = String::new();
                                 reader.read_to_string(&mut contents).unwrap();
@@ -333,6 +339,7 @@ fn clipboard_thread(
                                     close(writefd).unwrap();
                                     let mut contents = String::new();
                                     event_queue.sync_roundtrip().unwrap();
+                                    display.flush().unwrap();
                                     file.read_to_string(&mut contents).unwrap();
                                     contents
                                 })

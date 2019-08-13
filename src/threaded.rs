@@ -539,7 +539,7 @@ fn implement_seat(
                                         .lock()
                                         .unwrap()
                                         .get(&seat_name_clone.lock().unwrap().clone())
-                                        .map(|c| c.clone());
+                                        .cloned();
                                     if let Some(map_contents) = map_contents {
                                         seat_map_clone.lock().unwrap().insert(
                                             seat_name_clone.lock().unwrap().clone(),
@@ -579,7 +579,7 @@ fn implement_seat(
                                         .lock()
                                         .unwrap()
                                         .get(&seat_name_clone.lock().unwrap().clone())
-                                        .map(|c| c.clone());
+                                        .cloned();
                                     if let Some(map_contents) = map_contents {
                                         seat_map_clone.lock().unwrap().insert(
                                             seat_name_clone.lock().unwrap().clone(),

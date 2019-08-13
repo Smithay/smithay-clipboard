@@ -17,6 +17,12 @@ use sctk::reexports::client::protocol::{
     wl_seat,
 };
 use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager, NewProxy};
+use sctk::reexports::protocols::misc::gtk_primary_selection::client::{
+    gtk_primary_selection_device::Event as GtkPrimarySelectionDeviceEvent,
+    gtk_primary_selection_device::GtkPrimarySelectionDevice,
+    gtk_primary_selection_device_manager::GtkPrimarySelectionDeviceManager,
+    gtk_primary_selection_offer::GtkPrimarySelectionOffer, gtk_primary_selection_source,
+};
 use sctk::reexports::protocols::unstable::primary_selection::v1::client::{
     zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1 as PrimarySelectionDeviceMgr,
     zwp_primary_selection_device_v1::{
@@ -36,6 +42,8 @@ type SeatMap = HashMap<
         u32,
         Arc<Mutex<Option<PrimarySelectionDevice>>>,
         Arc<Mutex<Option<PrimarySelectionOffer>>>,
+        Arc<Mutex<Option<GtkPrimarySelectionDevice>>>,
+        Arc<Mutex<Option<GtkPrimarySelectionOffer>>>,
     ),
 >;
 
@@ -182,12 +190,14 @@ fn clipboard_thread(
     let mut unimplemented_seats = Vec::new();
 
     let primary_selection_device_manager = Arc::new(Mutex::new(None));
+    let gtk_primary_selection_device_manager = Arc::new(Mutex::new(None));
 
     // Store the name of the seat that last sends an event for use as the default seat
     let last_seat_name = Arc::new(Mutex::new(String::new()));
 
     let data_device_manager_clone = data_device_manager.clone();
     let primary_selection_device_manager_clone = primary_selection_device_manager.clone();
+    let gtk_primary_selection_device_manager_clone = gtk_primary_selection_device_manager.clone();
     let seat_map_clone = seat_map.clone();
     let last_seat_name_clone = last_seat_name.clone();
 
@@ -212,6 +222,7 @@ fn clipboard_thread(
                         data_device_manager,
                         &reg,
                         primary_selection_device_manager_clone.clone(),
+                        gtk_primary_selection_device_manager_clone.clone(),
                     );
                 } else {
                     // Store the seat for implementation once wl_data_device_manager is registered
@@ -237,12 +248,22 @@ fn clipboard_thread(
                         data_device_manager_clone.lock().unwrap().as_ref().unwrap(),
                         &reg,
                         primary_selection_device_manager_clone.clone(),
+                        gtk_primary_selection_device_manager_clone.clone(),
                     );
                 }
             } else if "zwp_primary_selection_device_manager_v1" == interface.as_str() {
                 // Register the zwp_primary_selection_device_manager
                 *primary_selection_device_manager_clone.lock().unwrap() = Some(
                     reg.bind::<PrimarySelectionDeviceMgr, _>(
+                        version,
+                        id,
+                        NewProxy::implement_dummy,
+                    )
+                    .unwrap(),
+                );
+            } else if "gtk_primary_selection_device_manager" == interface.as_str() {
+                *gtk_primary_selection_device_manager_clone.lock().unwrap() = Some(
+                    reg.bind::<GtkPrimarySelectionDeviceManager, _>(
                         version,
                         id,
                         NewProxy::implement_dummy,
@@ -296,7 +317,7 @@ fn clipboard_thread(
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the requested seat from the seat map
-                    if let Some((device, enter_serial, _, _)) = seat_map
+                    if let Some((device, enter_serial, _, _, _, _)) = seat_map
                         .get(&seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()))
                     {
                         let data_source = DataSource::new(
@@ -322,25 +343,63 @@ fn clipboard_thread(
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the primary clipboard contents of the requested seat from the seat map
-                    let contents = seat_map
-                        .get(&seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()))
-                        .map_or(String::new(), |seat| {
-                            seat.3
-                                .lock()
-                                .unwrap()
-                                .as_ref()
-                                .map_or(String::new(), |primary_offer| {
-                                    let (readfd, writefd) = pipe2(OFlag::O_CLOEXEC).unwrap();
-                                    let mut file = unsafe { std::fs::File::from_raw_fd(readfd) };
-                                    primary_offer
-                                        .receive("text/plain;charset=utf-8".to_string(), writefd);
-                                    close(writefd).unwrap();
-                                    let mut contents = String::new();
-                                    event_queue.sync_roundtrip().unwrap();
-                                    file.read_to_string(&mut contents).unwrap();
-                                    contents
-                                })
-                        });
+                    let contents = if primary_selection_device_manager.lock().unwrap().is_some() {
+                        seat_map
+                            .get(
+                                &seat_name
+                                    .unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
+                            )
+                            .map_or(String::new(), |seat| {
+                                seat.3.lock().unwrap().as_ref().map_or(
+                                    String::new(),
+                                    |primary_offer| {
+                                        let (readfd, writefd) = pipe2(OFlag::O_CLOEXEC).unwrap();
+                                        let mut file =
+                                            unsafe { std::fs::File::from_raw_fd(readfd) };
+                                        primary_offer.receive(
+                                            "text/plain;charset=utf-8".to_string(),
+                                            writefd,
+                                        );
+                                        close(writefd).unwrap();
+                                        let mut contents = String::new();
+                                        event_queue.sync_roundtrip().unwrap();
+                                        file.read_to_string(&mut contents).unwrap();
+                                        contents
+                                    },
+                                )
+                            })
+                    } else if gtk_primary_selection_device_manager
+                        .lock()
+                        .unwrap()
+                        .is_some()
+                    {
+                        seat_map
+                            .get(
+                                &seat_name
+                                    .unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
+                            )
+                            .map_or(String::new(), |seat| {
+                                seat.5.lock().unwrap().as_ref().map_or(
+                                    String::new(),
+                                    |primary_offer| {
+                                        let (readfd, writefd) = pipe2(OFlag::O_CLOEXEC).unwrap();
+                                        let mut file =
+                                            unsafe { std::fs::File::from_raw_fd(readfd) };
+                                        primary_offer.receive(
+                                            "text/plain;charset=utf-8".to_string(),
+                                            writefd,
+                                        );
+                                        close(writefd).unwrap();
+                                        let mut contents = String::new();
+                                        event_queue.sync_roundtrip().unwrap();
+                                        file.read_to_string(&mut contents).unwrap();
+                                        contents
+                                    },
+                                )
+                            })
+                    } else {
+                        String::new()
+                    };
                     load_send.send(contents).unwrap();
                 }
                 // Store text in the primary clipboard
@@ -349,8 +408,10 @@ fn clipboard_thread(
                     let seat_map = seat_map.lock().unwrap().clone();
 
                     // Get the requested seat from the seat map
-                    if let Some((_, enter_serial, primary_device, _)) = seat_map
-                        .get(&seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()))
+                    if let Some((_, enter_serial, primary_device, _, gtk_primary_device, _)) =
+                        seat_map.get(
+                            &seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
+                        )
                     {
                         if let Some(manager) = &*primary_selection_device_manager.lock().unwrap() {
                             if let Some(primary_device) = &*primary_device.lock().unwrap() {
@@ -378,6 +439,35 @@ fn clipboard_thread(
                                 }
                                 primary_device.set_selection(source.ok().as_ref(), *enter_serial);
                             }
+                        } else if let Some(manager) =
+                            &*gtk_primary_selection_device_manager.lock().unwrap()
+                        {
+                            if let Some(gtk_primary_device) = &*gtk_primary_device.lock().unwrap() {
+                                let source = manager.create_source(|proxy| {
+                                    proxy.implement_closure(
+                                        move |event, _| {
+                                            if let gtk_primary_selection_source::Event::Send {
+                                                mime_type,
+                                                fd,
+                                            } = event
+                                            {
+                                                if mime_type == "text/plain;charset=utf-8" {
+                                                    let mut file =
+                                                        unsafe { std::fs::File::from_raw_fd(fd) };
+                                                    file.write_fmt(format_args!("{}", contents))
+                                                        .unwrap();
+                                                }
+                                            }
+                                        },
+                                        (),
+                                    )
+                                });
+                                if let Ok(source) = &source {
+                                    source.offer("text/plain;charset=utf-8".to_string());
+                                }
+                                gtk_primary_device
+                                    .set_selection(source.ok().as_ref(), *enter_serial);
+                            }
                         }
                     }
                 }
@@ -399,6 +489,7 @@ fn implement_seat(
     data_device_manager: &wl_data_device_manager::WlDataDeviceManager,
     reg: &wl_registry::WlRegistry,
     primary_device_manager: Arc<Mutex<Option<PrimarySelectionDeviceMgr>>>,
+    gtk_primary_device_manager: Arc<Mutex<Option<GtkPrimarySelectionDeviceManager>>>,
 ) {
     let seat_name = Arc::new(Mutex::new(String::new()));
     let seat_name_clone = seat_name.clone();
@@ -426,50 +517,100 @@ fn implement_seat(
 
     let primary_offer = Arc::new(Mutex::new(None));
     let primary_offer_clone = primary_offer.clone();
+    let gtk_primary_offer = Arc::new(Mutex::new(None));
+    let gtk_primary_offer_clone = gtk_primary_offer.clone();
     let seat_map_clone = seat_map.clone();
     let seat_name_clone = seat_name.clone();
-    let primary_device = if let Some(manager) = &*primary_device_manager.lock().unwrap() {
-        Arc::new(Mutex::new(
-            manager
-                .get_device(&seat, |proxy| {
-                    let primary_offer_clone = primary_offer_clone.clone();
-                    proxy.implement_closure(
-                        move |event, _| {
-                            if let ZwpPrimarySelectionDeviceEvent::DataOffer { offer } = event {
-                                *primary_offer_clone.lock().unwrap() =
-                                    Some(offer.implement_dummy());
+    let (primary_device, gtk_primary_device) = if let Some(manager) =
+        &*primary_device_manager.lock().unwrap()
+    {
+        (
+            Arc::new(Mutex::new(
+                manager
+                    .get_device(&seat, |proxy| {
+                        let primary_offer_clone = primary_offer_clone.clone();
+                        proxy.implement_closure(
+                            move |event, _| {
+                                if let ZwpPrimarySelectionDeviceEvent::DataOffer { offer } = event {
+                                    *primary_offer_clone.lock().unwrap() =
+                                        Some(offer.implement_dummy());
 
-                                let map_contents = seat_map_clone
-                                    .lock()
-                                    .unwrap()
-                                    .get(&seat_name_clone.lock().unwrap().clone())
-                                    .map(|c| c.clone());
-                                if let Some(map_contents) = map_contents {
-                                    seat_map_clone.lock().unwrap().insert(
-                                        seat_name_clone.lock().unwrap().clone(),
-                                        (
-                                            map_contents.0.clone(),
-                                            map_contents.1,
-                                            map_contents.2.clone(),
-                                            primary_offer_clone.clone(),
-                                        ),
-                                    );
+                                    let map_contents = seat_map_clone
+                                        .lock()
+                                        .unwrap()
+                                        .get(&seat_name_clone.lock().unwrap().clone())
+                                        .map(|c| c.clone());
+                                    if let Some(map_contents) = map_contents {
+                                        seat_map_clone.lock().unwrap().insert(
+                                            seat_name_clone.lock().unwrap().clone(),
+                                            (
+                                                map_contents.0.clone(),
+                                                map_contents.1,
+                                                map_contents.2.clone(),
+                                                primary_offer_clone.clone(),
+                                                Arc::new(Mutex::new(None)),
+                                                Arc::new(Mutex::new(None)),
+                                            ),
+                                        );
+                                    }
                                 }
-                            }
-                        },
-                        (),
-                    )
-                })
-                .ok(),
-        ))
+                            },
+                            (),
+                        )
+                    })
+                    .ok(),
+            )),
+            Arc::new(Mutex::new(None)),
+        )
+    } else if let Some(manager) = &*gtk_primary_device_manager.lock().unwrap() {
+        (
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(
+                manager
+                    .get_device(&seat, |proxy| {
+                        let gtk_primary_offer_clone = gtk_primary_offer_clone.clone();
+                        proxy.implement_closure(
+                            move |event, _| {
+                                if let GtkPrimarySelectionDeviceEvent::DataOffer { offer } = event {
+                                    *gtk_primary_offer_clone.lock().unwrap() =
+                                        Some(offer.implement_dummy());
+
+                                    let map_contents = seat_map_clone
+                                        .lock()
+                                        .unwrap()
+                                        .get(&seat_name_clone.lock().unwrap().clone())
+                                        .map(|c| c.clone());
+                                    if let Some(map_contents) = map_contents {
+                                        seat_map_clone.lock().unwrap().insert(
+                                            seat_name_clone.lock().unwrap().clone(),
+                                            (
+                                                map_contents.0.clone(),
+                                                map_contents.1,
+                                                Arc::new(Mutex::new(None)),
+                                                Arc::new(Mutex::new(None)),
+                                                map_contents.4.clone(),
+                                                gtk_primary_offer_clone.clone(),
+                                            ),
+                                        );
+                                    }
+                                }
+                            },
+                            (),
+                        )
+                    })
+                    .ok(),
+            )),
+        )
     } else {
-        Arc::new(Mutex::new(None))
+        (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)))
     };
 
     let seat_map_clone = seat_map.clone();
     let device_clone = device.clone();
     let primary_device_clone = primary_device.clone();
     let primary_offer_clone = primary_offer_clone.clone();
+    let gtk_primary_device_clone = gtk_primary_device.clone();
+    let gtk_primary_offer_clone = gtk_primary_offer_clone.clone();
     let seat_name_clone = seat_name.clone();
     let last_seat_name_clone = last_seat_name.clone();
     map_keyboard_auto(&seat, move |event, _| {
@@ -486,6 +627,8 @@ fn implement_seat(
                         serial,
                         primary_device_clone.clone(),
                         primary_offer_clone.clone(),
+                        gtk_primary_device_clone.clone(),
+                        gtk_primary_offer_clone.clone(),
                     ),
                 );
             }
@@ -497,6 +640,8 @@ fn implement_seat(
                         serial,
                         primary_device_clone.clone(),
                         primary_offer_clone.clone(),
+                        gtk_primary_device_clone.clone(),
+                        gtk_primary_offer_clone.clone(),
                     ),
                 );
             }
@@ -527,6 +672,8 @@ fn implement_seat(
                                 serial,
                                 primary_device.clone(),
                                 primary_offer.clone(),
+                                gtk_primary_device.clone(),
+                                gtk_primary_offer.clone(),
                             ),
                         );
                     }
@@ -538,6 +685,8 @@ fn implement_seat(
                                 serial,
                                 primary_device.clone(),
                                 primary_offer.clone(),
+                                gtk_primary_device.clone(),
+                                gtk_primary_offer.clone(),
                             ),
                         );
                     }

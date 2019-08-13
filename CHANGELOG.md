@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add fallback to gtk primary selection, when zwp primary selection is not available
+
 ## 0.3.3 -- 2019-06-14
 
 - Update nix version to 0.14.1

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.4 -- 2019-08-14
+
 - Add fallback to gtk primary selection, when zwp primary selection is not available
 
 ## 0.3.3 -- 2019-06-14

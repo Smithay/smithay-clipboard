@@ -665,6 +665,16 @@ fn implement_seat(
                 // Get serials from recieved events from the seat pointer
                 match evt {
                     PtrEvent::Enter { serial, .. } => {
+                        if let Some(seat) = seat_map
+                            .lock()
+                            .unwrap()
+                            .get_mut(&seat_name.lock().unwrap().clone())
+                        {
+                            // Update serial if "seat" is already presented
+                            seat.1 = serial;
+                            return;
+                        }
+
                         seat_map.lock().unwrap().insert(
                             seat_name.lock().unwrap().clone(),
                             (
@@ -678,6 +688,17 @@ fn implement_seat(
                         );
                     }
                     PtrEvent::Button { serial, .. } => {
+                        if let Some(seat) = seat_map
+                            .lock()
+                            .unwrap()
+                            .get_mut(&seat_name.lock().unwrap().clone())
+                        {
+                            // Update serial if seat is already presented
+                            seat.1 = serial;
+                            return;
+                        }
+
+                        // This is for consistency with `PtrEvent::Enter`
                         seat_map.lock().unwrap().insert(
                             seat_name.lock().unwrap().clone(),
                             (
@@ -689,9 +710,6 @@ fn implement_seat(
                                 gtk_primary_offer.clone(),
                             ),
                         );
-                    }
-                    PtrEvent::Leave { .. } => {
-                        seat_map.lock().unwrap().remove(&*seat_name.lock().unwrap());
                     }
                     _ => {}
                 }

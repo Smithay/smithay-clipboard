@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix primary selection storing, when releasing button outside of the surface
+
 ## 0.3.4 -- 2019-08-14
 
 - Add fallback to gtk primary selection, when zwp primary selection is not available

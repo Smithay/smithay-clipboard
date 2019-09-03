@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.5 -- 2019-09-3
+
 - Fix primary selection storing, when releasing button outside of the surface
 
 ## 0.3.4 -- 2019-08-14

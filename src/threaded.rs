@@ -309,6 +309,9 @@ fn clipboard_thread(
                                 contents
                             })
                         });
+                    // Normalization should happen only on `text/plain;charset=utf-8`, in case we
+                    // add other mime types consult gtk for normalization.
+                    let contents = normilize_to_lf(contents);
                     load_send.send(contents).unwrap();
                 }
                 // Store text in the clipboard
@@ -400,6 +403,9 @@ fn clipboard_thread(
                     } else {
                         String::new()
                     };
+                    // Normalization should happen only on `text/plain;charset=utf-8`, in case we
+                    // add other mime types consult gtk for normalization.
+                    let contents = normilize_to_lf(contents);
                     load_send.send(contents).unwrap();
                 }
                 // Store text in the primary clipboard
@@ -718,4 +724,13 @@ fn implement_seat(
         )
     })
     .unwrap();
+}
+
+// Normalize \r and \r\n into \n.
+//
+// Gtk does this for text/plain;charset=utf-8, so following them here, otherwise there is
+// a chance of getting extra new lines on load, since they're converting \r and \n into
+// \r\n on every store.
+fn normilize_to_lf(text: String) -> String {
+    text.replace("\r\n", "\n").replace("\r", "\n")
 }

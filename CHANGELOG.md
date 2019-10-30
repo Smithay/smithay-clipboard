@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Perform loaded data normalization for text/plain;charset=utf-8 mime type
+
 ## 0.3.5 -- 2019-09-3
 
 - Fix primary selection storing, when releasing button outside of the surface

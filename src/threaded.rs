@@ -284,7 +284,6 @@ fn clipboard_thread(
     // Thread loop to handle requests and dispatch the event queue
     loop {
         if let Ok(request) = request_recv.try_recv() {
-
             // Lower sleep amount to zero, so the next recv will be instant
             sleep_amount = 0;
 
@@ -508,10 +507,9 @@ fn clipboard_thread(
                 }
             } else if sleep_amount < 50 {
                 // The aim of this different sleep times is to provide a good performance under
-                // highload and not waste system resources too much when idle
+                // high load and not waste system resources too much when idle
                 sleep_amount = std::cmp::min(2 * sleep_amount, 50);
             }
-
         } else if sleep_amount == 0 {
             // Reset sleep amount from zero back to one, so sleep sequence could reach 50
             sleep_amount = 1;

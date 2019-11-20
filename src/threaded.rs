@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::os::unix::io::FromRawFd;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
+use std::thread;
 use std::time::Duration;
 
 use nix::fcntl::OFlag;
@@ -275,9 +275,18 @@ fn clipboard_thread(
     });
     event_queue.sync_roundtrip().unwrap();
 
+    // We should provide lower sleep amounts in a moments of spaming our clipboard
+    let mut sleep_amount = 50;
+    // Provide our clipboard a warm start, so 16 initial cycles will be at 1ms and other will go
+    // like 1 2 4 8 16 32 50 50 and so on
+    let mut warm_start_amount = 0;
+
     // Thread loop to handle requests and dispatch the event queue
     loop {
         if let Ok(request) = request_recv.try_recv() {
+            // Lower sleep amount to zero, so the next recv will be instant
+            sleep_amount = 0;
+
             match request {
                 // Load text from clipboard
                 ThreadRequest::Load(seat_name) => {
@@ -480,9 +489,33 @@ fn clipboard_thread(
                 ThreadRequest::Kill => break,
             }
         }
-        // Dispatch the event queue and block for 50 milliseconds
-        event_queue.dispatch_pending().unwrap();
-        sleep(Duration::from_millis(50));
+        // Dispatch the event queue and block for `sleep_amount`
+        let pending_events = event_queue.dispatch_pending().unwrap();
+        let num_seats = seat_map.lock().unwrap().len();
+
+        // If some app is trying to spam us when there no seats, it's likely that someone is
+        // trying to paste from us
+        if num_seats == 0 && pending_events != 0 {
+            sleep_amount = 0;
+        } else if sleep_amount > 0 {
+            thread::sleep(Duration::from_millis(sleep_amount));
+
+            if warm_start_amount < 16 {
+                warm_start_amount += 1;
+                if warm_start_amount == 16 {
+                    sleep_amount = 1;
+                }
+            } else if sleep_amount < 50 {
+                // The aim of this different sleep times is to provide a good performance under
+                // high load and not waste system resources too much when idle
+                sleep_amount = std::cmp::min(2 * sleep_amount, 50);
+            }
+        } else if sleep_amount == 0 {
+            // Reset sleep amount from zero back to one, so sleep sequence could reach 50
+            sleep_amount = 1;
+            // Reset warm start to accelerate the initial clipboard requests
+            warm_start_amount = 0;
+        }
     }
 }
 

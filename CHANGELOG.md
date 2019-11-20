@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Perform loaded data normalization for text/plain;charset=utf-8 mime type
+- Fix clipboard throttling
 
 ## 0.3.5 -- 2019-09-3
 

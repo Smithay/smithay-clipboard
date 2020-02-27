@@ -216,7 +216,7 @@ fn clipboard_thread(
                     // Implement the seat
                     implement_seat(
                         id,
-                        version,
+                        std::cmp::min(version, 6), // only seat up to version 6 is supported
                         seat_map_clone.clone(),
                         last_seat_name_clone.clone(),
                         data_device_manager,
@@ -242,7 +242,7 @@ fn clipboard_thread(
                 for (id, version) in &unimplemented_seats {
                     implement_seat(
                         *id,
-                        *version,
+                        std::cmp::min(*version, 6), // only seat up to version 6 is supported
                         seat_map_clone.clone(),
                         last_seat_name_clone.clone(),
                         data_device_manager_clone.lock().unwrap().as_ref().unwrap(),

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Only bind seat with version up to 6, as version 7 is not yet supported by SCTK
+  for loading keymaps
+
 ## 0.3.6 -- 2019-11-21
 
 - Perform loaded data normalization for text/plain;charset=utf-8 mime type

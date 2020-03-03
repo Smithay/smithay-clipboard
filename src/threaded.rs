@@ -13,9 +13,13 @@ use nix::unistd::{close, pipe2};
 use sctk::data_device::{DataDevice, DataSource, DataSourceEvent};
 use sctk::keyboard::{map_keyboard_auto, Event as KbEvent};
 use sctk::reexports::client::protocol::{
-    wl_data_device_manager, wl_display::WlDisplay, wl_pointer::Event as PtrEvent, wl_registry,
-    wl_seat,
+    wl_data_device_manager,
+    wl_display::WlDisplay,
+    wl_pointer::Event as PtrEvent,
+    wl_registry,
+    wl_seat::{self, Capability},
 };
+
 use sctk::reexports::client::{Display, EventQueue, GlobalEvent, GlobalManager, NewProxy};
 use sctk::reexports::protocols::misc::gtk_primary_selection::client::{
     gtk_primary_selection_device::Event as GtkPrimarySelectionDeviceEvent,
@@ -38,7 +42,7 @@ use sctk::wayland_client::sys::client::wl_display;
 type SeatMap = HashMap<
     String,
     (
-        Arc<Mutex<DataDevice>>,
+        Arc<Mutex<Option<DataDevice>>>,
         u32,
         Arc<Mutex<Option<PrimarySelectionDevice>>>,
         Arc<Mutex<Option<PrimarySelectionOffer>>>,
@@ -298,20 +302,25 @@ fn clipboard_thread(
                         .get(&seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()))
                         .map_or(Ok(String::new()), |seat| {
                             let mut reader = None;
-                            seat.0.lock().unwrap().with_selection(|offer| {
-                                if let Some(offer) = offer {
-                                    offer.with_mime_types(|types| {
-                                        if types.contains(&"text/plain;charset=utf-8".to_string()) {
-                                            reader = Some(
-                                                offer
-                                                    .receive("text/plain;charset=utf-8".into())
-                                                    .unwrap(),
-                                            );
-                                        }
-                                    });
-                                }
-                            });
-                            event_queue.sync_roundtrip().unwrap();
+                            if let Some(device) = seat.0.lock().unwrap().as_ref() {
+                                device.with_selection(|offer| {
+                                    if let Some(offer) = offer {
+                                        offer.with_mime_types(|types| {
+                                            if types
+                                                .contains(&"text/plain;charset=utf-8".to_string())
+                                            {
+                                                reader = Some(
+                                                    offer
+                                                        .receive("text/plain;charset=utf-8".into())
+                                                        .unwrap(),
+                                                );
+                                            }
+                                        });
+                                    }
+                                });
+
+                                event_queue.sync_roundtrip().unwrap();
+                            }
                             reader.map_or(Ok(String::new()), |mut reader| {
                                 let mut contents = String::new();
                                 if let Err(err) = reader.read_to_string(&mut contents) {
@@ -335,21 +344,21 @@ fn clipboard_thread(
                     if let Some((device, enter_serial, _, _, _, _)) = seat_map
                         .get(&seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()))
                     {
-                        let data_source = DataSource::new(
-                            data_device_manager.lock().unwrap().as_ref().unwrap(),
-                            &["text/plain;charset=utf-8"],
-                            move |source_event| {
-                                if let DataSourceEvent::Send { mut pipe, .. } = source_event {
-                                    write!(pipe, "{}", contents).unwrap();
-                                }
-                            },
-                        );
-                        device
-                            .lock()
-                            .unwrap()
-                            .set_selection(&Some(data_source), *enter_serial);
+                        if let Some(device) = device.lock().unwrap().as_ref() {
+                            let data_source = DataSource::new(
+                                data_device_manager.lock().unwrap().as_ref().unwrap(),
+                                &["text/plain;charset=utf-8"],
+                                move |source_event| {
+                                    if let DataSourceEvent::Send { mut pipe, .. } = source_event {
+                                        write!(pipe, "{}", contents).unwrap();
+                                    }
+                                },
+                            );
 
-                        event_queue.sync_roundtrip().unwrap();
+                            device.set_selection(&Some(data_source), *enter_serial);
+
+                            event_queue.sync_roundtrip().unwrap();
+                        }
                     }
                 }
                 // Load text from primary clipboard
@@ -539,17 +548,193 @@ fn implement_seat(
     primary_device_manager: Arc<Mutex<Option<PrimarySelectionDeviceMgr>>>,
     gtk_primary_device_manager: Arc<Mutex<Option<GtkPrimarySelectionDeviceManager>>>,
 ) {
+    let device = Arc::new(Mutex::new(None));
+    let device_clone = device.clone();
     let seat_name = Arc::new(Mutex::new(String::new()));
     let seat_name_clone = seat_name.clone();
+    let seat_map_clone = seat_map.clone();
+
+    let primary_device = Arc::new(Mutex::new(None));
+    let primary_offer = Arc::new(Mutex::new(None));
+
+    let primary_device_clone = primary_device.clone();
+    let primary_offer_clone = primary_offer.clone();
+
+    let gtk_primary_device = Arc::new(Mutex::new(None));
+    let gtk_primary_offer = Arc::new(Mutex::new(None));
+
+    let gtk_primary_device_clone = gtk_primary_device.clone();
+    let gtk_primary_offer_clone = gtk_primary_offer.clone();
+
+    let mut pointer = None;
+    let mut keyboard = None;
 
     // Register the seat
     let seat = reg
         .bind::<wl_seat::WlSeat, _>(version, id, move |proxy| {
             proxy.implement_closure(
-                move |event, _| {
-                    if let wl_seat::Event::Name { name } = event {
-                        *seat_name_clone.lock().unwrap() = name
+                move |event, seat| match event {
+                    wl_seat::Event::Name { name } => *seat_name_clone.lock().unwrap() = name,
+                    wl_seat::Event::Capabilities { capabilities } => {
+                        if capabilities.contains(Capability::Pointer) {
+                            if pointer.is_none() {
+                                let device_clone = device_clone.clone();
+
+                                let primary_device_clone = primary_device_clone.clone();
+                                let primary_offer_clone = primary_offer_clone.clone();
+
+                                let gtk_primary_device_clone = gtk_primary_device_clone.clone();
+                                let gtk_primary_offer_clone = gtk_primary_offer_clone.clone();
+
+                                let last_seat_name_clone = last_seat_name.clone();
+                                let seat_map_clone = seat_map_clone.clone();
+                                let seat_name_clone = seat_name_clone.clone();
+                                pointer = Some(
+                                    seat.get_pointer(move |pointer| {
+                                        pointer.implement_closure(
+                                            move |evt, _| {
+                                                // Set this seat as the last to send an event
+                                                *last_seat_name_clone.lock().unwrap() =
+                                                    seat_name_clone.lock().unwrap().clone();
+
+                                                // Get serials from recieved events from the seat
+                                                // pointer
+                                                match evt {
+                                                    PtrEvent::Enter { serial, .. } => {
+                                                        if let Some(seat) =
+                                                            seat_map_clone.lock().unwrap().get_mut(
+                                                                &seat_name_clone
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .clone(),
+                                                            )
+                                                        {
+                                                            // Update serial if "seat" is already
+                                                            // presented
+                                                            seat.1 = serial;
+                                                            return;
+                                                        }
+
+                                                        seat_map_clone.lock().unwrap().insert(
+                                                            seat_name_clone.lock().unwrap().clone(),
+                                                            (
+                                                                device_clone.clone(),
+                                                                serial,
+                                                                primary_device_clone.clone(),
+                                                                primary_offer_clone.clone(),
+                                                                gtk_primary_device_clone.clone(),
+                                                                gtk_primary_offer_clone.clone(),
+                                                            ),
+                                                        );
+                                                    }
+                                                    PtrEvent::Button { serial, .. } => {
+                                                        if let Some(seat) =
+                                                            seat_map_clone.lock().unwrap().get_mut(
+                                                                &seat_name_clone
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .clone(),
+                                                            )
+                                                        {
+                                                            // Update serial if seat is already
+                                                            // presented
+                                                            seat.1 = serial;
+                                                            return;
+                                                        }
+
+                                                        // This is for consistency with
+                                                        // `PtrEvent::Enter`
+                                                        seat_map_clone.lock().unwrap().insert(
+                                                            seat_name_clone.lock().unwrap().clone(),
+                                                            (
+                                                                device_clone.clone(),
+                                                                serial,
+                                                                primary_device_clone.clone(),
+                                                                primary_offer_clone.clone(),
+                                                                gtk_primary_device_clone.clone(),
+                                                                gtk_primary_offer_clone.clone(),
+                                                            ),
+                                                        );
+                                                    }
+                                                    _ => {}
+                                                }
+                                            },
+                                            (),
+                                        )
+                                    })
+                                    .unwrap(),
+                                );
+                            }
+                        } else if let Some(pointer) = pointer.take() {
+                            // Release old pointer
+                            pointer.release();
+                        }
+
+                        if capabilities.contains(Capability::Keyboard) {
+                            if keyboard.is_none() {
+                                let device_clone = device_clone.clone();
+
+                                let primary_device_clone = primary_device_clone.clone();
+                                let primary_offer_clone = primary_offer_clone.clone();
+
+                                let gtk_primary_device_clone = gtk_primary_device_clone.clone();
+                                let gtk_primary_offer_clone = gtk_primary_offer_clone.clone();
+
+                                let last_seat_name_clone = last_seat_name.clone();
+                                let seat_map_clone = seat_map_clone.clone();
+                                let seat_name_clone = seat_name_clone.clone();
+                                keyboard = Some(
+                                    map_keyboard_auto(&seat, move |event, _| {
+                                        // Set this seat as the last to send an event
+                                        *last_seat_name_clone.lock().unwrap() =
+                                            seat_name_clone.lock().unwrap().clone();
+
+                                        // Get serials from recieved events from the seat keyboard
+                                        match event {
+                                            KbEvent::Enter { serial, .. } => {
+                                                seat_map_clone.lock().unwrap().insert(
+                                                    seat_name_clone.lock().unwrap().clone(),
+                                                    (
+                                                        device_clone.clone(),
+                                                        serial,
+                                                        primary_device_clone.clone(),
+                                                        primary_offer_clone.clone(),
+                                                        gtk_primary_device_clone.clone(),
+                                                        gtk_primary_offer_clone.clone(),
+                                                    ),
+                                                );
+                                            }
+                                            KbEvent::Key { serial, .. } => {
+                                                seat_map_clone.lock().unwrap().insert(
+                                                    seat_name_clone.lock().unwrap().clone(),
+                                                    (
+                                                        device_clone.clone(),
+                                                        serial,
+                                                        primary_device_clone.clone(),
+                                                        primary_offer_clone.clone(),
+                                                        gtk_primary_device_clone.clone(),
+                                                        gtk_primary_offer_clone.clone(),
+                                                    ),
+                                                );
+                                            }
+                                            KbEvent::Leave { .. } => {
+                                                seat_map_clone
+                                                    .lock()
+                                                    .unwrap()
+                                                    .remove(&*seat_name_clone.lock().unwrap());
+                                            }
+                                            _ => {}
+                                        }
+                                    })
+                                    .unwrap(),
+                                );
+                            }
+                        } else if let Some(keyboard) = keyboard.take() {
+                            // Release old keyboard
+                            keyboard.release();
+                        }
                     }
+                    _ => (),
                 },
                 (),
             )
@@ -557,215 +742,77 @@ fn implement_seat(
         .unwrap();
 
     // Create a device for the seat
-    let device = Arc::new(Mutex::new(DataDevice::init_for_seat(
+    *device.lock().unwrap() = Some(DataDevice::init_for_seat(
         data_device_manager,
         &seat,
         |_| {},
-    )));
+    ));
 
-    let primary_offer = Arc::new(Mutex::new(None));
-    let primary_offer_clone = primary_offer.clone();
-    let gtk_primary_offer = Arc::new(Mutex::new(None));
-    let gtk_primary_offer_clone = gtk_primary_offer.clone();
-    let seat_map_clone = seat_map.clone();
-    let seat_name_clone = seat_name.clone();
-    let (primary_device, gtk_primary_device) = if let Some(manager) =
-        &*primary_device_manager.lock().unwrap()
-    {
-        (
-            Arc::new(Mutex::new(
-                manager
-                    .get_device(&seat, |proxy| {
-                        let primary_offer_clone = primary_offer_clone.clone();
-                        proxy.implement_closure(
-                            move |event, _| {
-                                if let ZwpPrimarySelectionDeviceEvent::DataOffer { offer } = event {
-                                    *primary_offer_clone.lock().unwrap() =
-                                        Some(offer.implement_dummy());
+    if let Some(manager) = &*primary_device_manager.lock().unwrap() {
+        *primary_device.lock().unwrap() = manager
+            .get_device(&seat, |proxy| {
+                proxy.implement_closure(
+                    move |event, _| {
+                        if let ZwpPrimarySelectionDeviceEvent::DataOffer { offer } = event {
+                            *primary_offer.lock().unwrap() = Some(offer.implement_dummy());
 
-                                    let map_contents = seat_map_clone
-                                        .lock()
-                                        .unwrap()
-                                        .get(&seat_name_clone.lock().unwrap().clone())
-                                        .cloned();
-                                    if let Some(map_contents) = map_contents {
-                                        seat_map_clone.lock().unwrap().insert(
-                                            seat_name_clone.lock().unwrap().clone(),
-                                            (
-                                                map_contents.0.clone(),
-                                                map_contents.1,
-                                                map_contents.2.clone(),
-                                                primary_offer_clone.clone(),
-                                                Arc::new(Mutex::new(None)),
-                                                Arc::new(Mutex::new(None)),
-                                            ),
-                                        );
-                                    }
-                                }
-                            },
-                            (),
-                        )
-                    })
-                    .ok(),
-            )),
-            Arc::new(Mutex::new(None)),
-        )
+                            let map_contents = seat_map
+                                .lock()
+                                .unwrap()
+                                .get(&seat_name.lock().unwrap().clone())
+                                .cloned();
+                            if let Some(map_contents) = map_contents {
+                                seat_map.lock().unwrap().insert(
+                                    seat_name.lock().unwrap().clone(),
+                                    (
+                                        map_contents.0.clone(),
+                                        map_contents.1,
+                                        map_contents.2,
+                                        primary_offer.clone(),
+                                        Arc::new(Mutex::new(None)),
+                                        Arc::new(Mutex::new(None)),
+                                    ),
+                                );
+                            }
+                        }
+                    },
+                    (),
+                )
+            })
+            .ok();
     } else if let Some(manager) = &*gtk_primary_device_manager.lock().unwrap() {
-        (
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(
-                manager
-                    .get_device(&seat, |proxy| {
-                        let gtk_primary_offer_clone = gtk_primary_offer_clone.clone();
-                        proxy.implement_closure(
-                            move |event, _| {
-                                if let GtkPrimarySelectionDeviceEvent::DataOffer { offer } = event {
-                                    *gtk_primary_offer_clone.lock().unwrap() =
-                                        Some(offer.implement_dummy());
+        *gtk_primary_device.lock().unwrap() = manager
+            .get_device(&seat, |proxy| {
+                proxy.implement_closure(
+                    move |event, _| {
+                        if let GtkPrimarySelectionDeviceEvent::DataOffer { offer } = event {
+                            *gtk_primary_offer.lock().unwrap() = Some(offer.implement_dummy());
 
-                                    let map_contents = seat_map_clone
-                                        .lock()
-                                        .unwrap()
-                                        .get(&seat_name_clone.lock().unwrap().clone())
-                                        .cloned();
-                                    if let Some(map_contents) = map_contents {
-                                        seat_map_clone.lock().unwrap().insert(
-                                            seat_name_clone.lock().unwrap().clone(),
-                                            (
-                                                map_contents.0.clone(),
-                                                map_contents.1,
-                                                Arc::new(Mutex::new(None)),
-                                                Arc::new(Mutex::new(None)),
-                                                map_contents.4.clone(),
-                                                gtk_primary_offer_clone.clone(),
-                                            ),
-                                        );
-                                    }
-                                }
-                            },
-                            (),
-                        )
-                    })
-                    .ok(),
-            )),
-        )
-    } else {
-        (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)))
-    };
-
-    let seat_map_clone = seat_map.clone();
-    let device_clone = device.clone();
-    let primary_device_clone = primary_device.clone();
-    let primary_offer_clone = primary_offer_clone.clone();
-    let gtk_primary_device_clone = gtk_primary_device.clone();
-    let gtk_primary_offer_clone = gtk_primary_offer_clone.clone();
-    let seat_name_clone = seat_name.clone();
-    let last_seat_name_clone = last_seat_name.clone();
-    map_keyboard_auto(&seat, move |event, _| {
-        // Set this seat as the last to send an event
-        *last_seat_name_clone.lock().unwrap() = seat_name_clone.lock().unwrap().clone();
-
-        // Get serials from recieved events from the seat keyboard
-        match event {
-            KbEvent::Enter { serial, .. } => {
-                seat_map_clone.lock().unwrap().insert(
-                    seat_name_clone.lock().unwrap().clone(),
-                    (
-                        device_clone.clone(),
-                        serial,
-                        primary_device_clone.clone(),
-                        primary_offer_clone.clone(),
-                        gtk_primary_device_clone.clone(),
-                        gtk_primary_offer_clone.clone(),
-                    ),
-                );
-            }
-            KbEvent::Key { serial, .. } => {
-                seat_map_clone.lock().unwrap().insert(
-                    seat_name_clone.lock().unwrap().clone(),
-                    (
-                        device_clone.clone(),
-                        serial,
-                        primary_device_clone.clone(),
-                        primary_offer_clone.clone(),
-                        gtk_primary_device_clone.clone(),
-                        gtk_primary_offer_clone.clone(),
-                    ),
-                );
-            }
-            KbEvent::Leave { .. } => {
-                seat_map_clone
-                    .lock()
-                    .unwrap()
-                    .remove(&*seat_name_clone.lock().unwrap());
-            }
-            _ => {}
-        }
-    })
-    .unwrap();
-
-    seat.get_pointer(|pointer| {
-        pointer.implement_closure(
-            move |evt, _| {
-                // Set this seat as the last to send an event
-                *last_seat_name.lock().unwrap() = seat_name.lock().unwrap().clone();
-
-                // Get serials from recieved events from the seat pointer
-                match evt {
-                    PtrEvent::Enter { serial, .. } => {
-                        if let Some(seat) = seat_map
-                            .lock()
-                            .unwrap()
-                            .get_mut(&seat_name.lock().unwrap().clone())
-                        {
-                            // Update serial if "seat" is already presented
-                            seat.1 = serial;
-                            return;
+                            let map_contents = seat_map
+                                .lock()
+                                .unwrap()
+                                .get(&seat_name.lock().unwrap().clone())
+                                .cloned();
+                            if let Some(map_contents) = map_contents {
+                                seat_map.lock().unwrap().insert(
+                                    seat_name.lock().unwrap().clone(),
+                                    (
+                                        map_contents.0.clone(),
+                                        map_contents.1,
+                                        Arc::new(Mutex::new(None)),
+                                        Arc::new(Mutex::new(None)),
+                                        map_contents.4,
+                                        gtk_primary_offer.clone(),
+                                    ),
+                                );
+                            }
                         }
-
-                        seat_map.lock().unwrap().insert(
-                            seat_name.lock().unwrap().clone(),
-                            (
-                                device.clone(),
-                                serial,
-                                primary_device.clone(),
-                                primary_offer.clone(),
-                                gtk_primary_device.clone(),
-                                gtk_primary_offer.clone(),
-                            ),
-                        );
-                    }
-                    PtrEvent::Button { serial, .. } => {
-                        if let Some(seat) = seat_map
-                            .lock()
-                            .unwrap()
-                            .get_mut(&seat_name.lock().unwrap().clone())
-                        {
-                            // Update serial if seat is already presented
-                            seat.1 = serial;
-                            return;
-                        }
-
-                        // This is for consistency with `PtrEvent::Enter`
-                        seat_map.lock().unwrap().insert(
-                            seat_name.lock().unwrap().clone(),
-                            (
-                                device.clone(),
-                                serial,
-                                primary_device.clone(),
-                                primary_offer.clone(),
-                                gtk_primary_device.clone(),
-                                gtk_primary_offer.clone(),
-                            ),
-                        );
-                    }
-                    _ => {}
-                }
-            },
-            (),
-        )
-    })
-    .unwrap();
+                    },
+                    (),
+                )
+            })
+            .ok();
+    }
 }
 
 // Normalize \r and \r\n into \n.

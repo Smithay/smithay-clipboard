@@ -4,6 +4,7 @@
 
 - Fix crash when receiving non-utf8 data
 - **Breaking** `load` and `load_primary` now return `Result<String>` to indicate errors
+- Fix clipboard dying after TTY switch
 
 ## 0.3.7 -- 2020-02-27
 

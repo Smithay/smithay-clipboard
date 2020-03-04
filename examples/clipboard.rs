@@ -37,7 +37,7 @@ fn main() {
         } = event
         {
             if text == " " {
-                *cb_contents_clone.lock().unwrap() = dbg!(clipboard.load(None));
+                *cb_contents_clone.lock().unwrap() = dbg!(clipboard.load(None).unwrap());
                 need_redraw_clone.store(true, atomic::Ordering::Relaxed)
             } else if text == "s" {
                 clipboard.store(

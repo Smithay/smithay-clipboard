@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{Read, Result, Write};
 use std::ops::Deref;
 use std::os::unix::io::FromRawFd;
 use std::sync::mpsc;
@@ -50,7 +50,7 @@ type SeatMap = HashMap<
 /// Object representing the Wayland clipboard
 pub struct ThreadedClipboard {
     request_send: mpsc::Sender<ThreadRequest>,
-    load_recv: mpsc::Receiver<String>,
+    load_recv: mpsc::Receiver<Result<String>>,
 }
 
 // Kill thread when clipboard object is dropped
@@ -113,7 +113,7 @@ impl ThreadedClipboard {
     /// focus to work. Otherwise if no seat name is provided
     /// the name of the seat to last generate a key or pointer event
     /// is used
-    pub fn load(&mut self, seat_name: Option<String>) -> String {
+    pub fn load(&mut self, seat_name: Option<String>) -> Result<String> {
         self.request_send
             .send(ThreadRequest::Load(seat_name))
             .unwrap();
@@ -141,7 +141,7 @@ impl ThreadedClipboard {
     /// focus to work. Otherwise if no seat name is provided
     /// the name of the seat to last generate a key or pointer event
     /// is used
-    pub fn load_primary(&mut self, seat_name: Option<String>) -> String {
+    pub fn load_primary(&mut self, seat_name: Option<String>) -> Result<String> {
         self.request_send
             .send(ThreadRequest::LoadPrimary(seat_name))
             .unwrap();
@@ -180,7 +180,7 @@ fn clipboard_thread(
     display: &WlDisplay,
     event_queue: &mut EventQueue,
     request_recv: mpsc::Receiver<ThreadRequest>,
-    load_send: mpsc::Sender<String>,
+    load_send: mpsc::Sender<Result<String>>,
 ) {
     // Create a seat map to register seats
     let seat_map = Arc::new(Mutex::new(SeatMap::new()));
@@ -296,7 +296,7 @@ fn clipboard_thread(
                     // Get the clipboard contents of the requested seat from the seat map
                     let contents = seat_map
                         .get(&seat_name.unwrap_or_else(|| last_seat_name.lock().unwrap().clone()))
-                        .map_or(String::new(), |seat| {
+                        .map_or(Ok(String::new()), |seat| {
                             let mut reader = None;
                             seat.0.lock().unwrap().with_selection(|offer| {
                                 if let Some(offer) = offer {
@@ -312,15 +312,18 @@ fn clipboard_thread(
                                 }
                             });
                             event_queue.sync_roundtrip().unwrap();
-                            reader.map_or(String::new(), |mut reader| {
+                            reader.map_or(Ok(String::new()), |mut reader| {
                                 let mut contents = String::new();
-                                reader.read_to_string(&mut contents).unwrap();
-                                contents
+                                if let Err(err) = reader.read_to_string(&mut contents) {
+                                    Err(err)
+                                } else {
+                                    Ok(contents)
+                                }
                             })
                         });
                     // Normalization should happen only on `text/plain;charset=utf-8`, in case we
                     // add other mime types consult gtk for normalization.
-                    let contents = normilize_to_lf(contents);
+                    let contents = contents.and_then(|contents| Ok(normilize_to_lf(contents)));
                     load_send.send(contents).unwrap();
                 }
                 // Store text in the clipboard
@@ -361,9 +364,9 @@ fn clipboard_thread(
                                 &seat_name
                                     .unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
                             )
-                            .map_or(String::new(), |seat| {
+                            .map_or(Ok(String::new()), |seat| {
                                 seat.3.lock().unwrap().as_ref().map_or(
-                                    String::new(),
+                                    Ok(String::new()),
                                     |primary_offer| {
                                         let (readfd, writefd) = pipe2(OFlag::O_CLOEXEC).unwrap();
                                         let mut file =
@@ -375,8 +378,11 @@ fn clipboard_thread(
                                         close(writefd).unwrap();
                                         let mut contents = String::new();
                                         event_queue.sync_roundtrip().unwrap();
-                                        file.read_to_string(&mut contents).unwrap();
-                                        contents
+                                        if let Err(err) = file.read_to_string(&mut contents) {
+                                            Err(err)
+                                        } else {
+                                            Ok(contents)
+                                        }
                                     },
                                 )
                             })
@@ -390,9 +396,9 @@ fn clipboard_thread(
                                 &seat_name
                                     .unwrap_or_else(|| last_seat_name.lock().unwrap().clone()),
                             )
-                            .map_or(String::new(), |seat| {
+                            .map_or(Ok(String::new()), |seat| {
                                 seat.5.lock().unwrap().as_ref().map_or(
-                                    String::new(),
+                                    Ok(String::new()),
                                     |primary_offer| {
                                         let (readfd, writefd) = pipe2(OFlag::O_CLOEXEC).unwrap();
                                         let mut file =
@@ -404,17 +410,20 @@ fn clipboard_thread(
                                         close(writefd).unwrap();
                                         let mut contents = String::new();
                                         event_queue.sync_roundtrip().unwrap();
-                                        file.read_to_string(&mut contents).unwrap();
-                                        contents
+                                        if let Err(err) = file.read_to_string(&mut contents) {
+                                            Err(err)
+                                        } else {
+                                            Ok(contents)
+                                        }
                                     },
                                 )
                             })
                     } else {
-                        String::new()
+                        Ok(String::new())
                     };
                     // Normalization should happen only on `text/plain;charset=utf-8`, in case we
                     // add other mime types consult gtk for normalization.
-                    let contents = normilize_to_lf(contents);
+                    let contents = contents.and_then(|contents| Ok(normilize_to_lf(contents)));
                     load_send.send(contents).unwrap();
                 }
                 // Store text in the primary clipboard

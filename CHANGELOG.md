@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix crash when receiving non-utf8 data
+- **Breaking** `load` and `load_primary` now return `Result<String>` to indicate errors
+
 ## 0.3.7 -- 2020-02-27
 
 - Only bind seat with version up to 6, as version 7 is not yet supported by SCTK

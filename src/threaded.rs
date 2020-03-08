@@ -667,7 +667,9 @@ fn implement_seat(
                             }
                         } else if let Some(pointer) = pointer.take() {
                             // Release old pointer
-                            pointer.release();
+                            if pointer.as_ref().version() >= 3 {
+                                pointer.release();
+                            }
                         }
 
                         if capabilities.contains(Capability::Keyboard) {
@@ -731,7 +733,9 @@ fn implement_seat(
                             }
                         } else if let Some(keyboard) = keyboard.take() {
                             // Release old keyboard
-                            keyboard.release();
+                            if keyboard.as_ref().version() >= 3 {
+                                keyboard.release();
+                            }
                         }
                     }
                     _ => (),

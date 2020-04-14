@@ -1,234 +1,303 @@
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::{atomic, Arc, Mutex};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 
-use sctk::keyboard::{map_keyboard_auto, Event as KbEvent, KeyState};
-use sctk::utils::{DoubleMemPool, MemPool};
-use sctk::window::{ConceptFrame, Event as WEvent, Window};
-use sctk::Environment;
+use sctk::seat;
+use sctk::seat::keyboard::{self, Event as KeyboardEvent, KeyState, RepeatKind};
+use sctk::shm::MemPool;
+use sctk::window::{ConceptFrame, Event as WindowEvent};
 
-use sctk::reexports::client::protocol::{wl_shm, wl_surface};
-use sctk::reexports::client::{Display, NewProxy};
+use sctk::reexports::calloop::Source as EventLoopSource;
+use sctk::reexports::client::protocol::wl_keyboard::WlKeyboard;
+use sctk::reexports::client::protocol::wl_seat::WlSeat;
+use sctk::reexports::client::protocol::wl_shm;
+use sctk::reexports::client::protocol::wl_surface::WlSurface;
 
-use andrew::shapes::rectangle;
-use andrew::text;
-use andrew::text::fontconfig;
+use smithay_clipboard::Clipboard;
 
-fn main() {
-    let (display, mut event_queue) =
-        Display::connect_to_env().expect("Failed to connect to the wayland server.");
-    let env = Environment::from_display(&*display, &mut event_queue).unwrap();
+sctk::default_environment!(ClipboardExample, desktop);
 
-    let mut clipboard = smithay_clipboard::WaylandClipboard::new(&display);
-    let cb_contents = Arc::new(Mutex::new(String::new()));
+/// Our dispatch data for simple clipboard access and processing frame events.
+struct DispatchData {
+    /// Pending event from SCTK to update window.
+    pub pending_frame_event: Option<WindowEvent>,
+    /// Clipboard handler.
+    pub clipboard: Clipboard,
+}
 
-    let seat = env
-        .manager
-        .instantiate_range(2, 6, NewProxy::implement_dummy)
-        .unwrap();
-
-    let need_redraw = Arc::new(atomic::AtomicBool::new(false));
-    let need_redraw_clone = need_redraw.clone();
-    let cb_contents_clone = cb_contents.clone();
-    map_keyboard_auto(&seat, move |event: KbEvent, _| {
-        if let KbEvent::Key {
-            state: KeyState::Pressed,
-            utf8: Some(text),
-            ..
-        } = event
-        {
-            if text == " " {
-                *cb_contents_clone.lock().unwrap() = dbg!(clipboard.load(None).unwrap());
-                need_redraw_clone.store(true, atomic::Ordering::Relaxed)
-            } else if text == "s" {
-                clipboard.store(
-                    None,
-                    "This is an example text thats been copied to the wayland clipboard :)"
-                        .to_string(),
-                );
-            }
+impl DispatchData {
+    fn new(clipboard: Clipboard) -> Self {
+        Self {
+            pending_frame_event: None,
+            clipboard,
         }
-    })
-    .unwrap();
-
-    let mut dimensions = (320u32, 240u32);
-    let surface = env
-        .compositor
-        .create_surface(NewProxy::implement_dummy)
-        .unwrap();
-
-    let next_action = Arc::new(Mutex::new(None::<WEvent>));
-
-    let waction = next_action.clone();
-    let mut window = Window::<ConceptFrame>::init_from_env(&env, surface, dimensions, move |evt| {
-        let mut next_action = waction.lock().unwrap();
-        // Keep last event in priority order : Close > Configure > Refresh
-        let replace = match (&evt, &*next_action) {
-            (_, &None)
-            | (_, &Some(WEvent::Refresh))
-            | (&WEvent::Configure { .. }, &Some(WEvent::Configure { .. }))
-            | (&WEvent::Close, _) => true,
-            _ => false,
-        };
-        if replace {
-            *next_action = Some(evt);
-        }
-    })
-    .expect("Failed to create a window !");
-
-    window.new_seat(&seat);
-    window.set_title("Clipboard".to_string());
-
-    let mut pools = DoubleMemPool::new(&env.shm, || {}).expect("Failed to create a memory pool !");
-
-    let mut font_data = Vec::new();
-    std::fs::File::open(
-        &fontconfig::FontConfig::new()
-            .unwrap()
-            .get_regular_family_fonts("sans")
-            .unwrap()[0],
-    )
-    .unwrap()
-    .read_to_end(&mut font_data)
-    .unwrap();
-
-    if !env.shell.needs_configure() {
-        // initial draw to bootstrap on wl_shell
-        if let Some(pool) = pools.pool() {
-            redraw(
-                pool,
-                window.surface(),
-                dimensions,
-                &font_data,
-                "".to_string(),
-            );
-        }
-        window.refresh();
-    }
-
-    loop {
-        match next_action.lock().unwrap().take() {
-            Some(WEvent::Close) => break,
-            Some(WEvent::Refresh) => {
-                window.refresh();
-                window.surface().commit();
-            }
-            Some(WEvent::Configure { new_size, .. }) => {
-                if let Some((w, h)) = new_size {
-                    window.resize(w, h);
-                    dimensions = (w, h)
-                }
-                window.refresh();
-                if let Some(pool) = pools.pool() {
-                    redraw(
-                        pool,
-                        window.surface(),
-                        dimensions,
-                        &font_data,
-                        cb_contents.lock().unwrap().clone(),
-                    );
-                }
-            }
-            None => {}
-        }
-
-        if need_redraw.swap(false, atomic::Ordering::Relaxed) {
-            if let Some(pool) = pools.pool() {
-                redraw(
-                    pool,
-                    window.surface(),
-                    dimensions,
-                    &font_data,
-                    cb_contents.lock().unwrap().clone(),
-                );
-            }
-            window
-                .surface()
-                .damage_buffer(0, 0, dimensions.0 as i32, dimensions.1 as i32);
-            window.surface().commit();
-        }
-
-        event_queue.dispatch().unwrap();
     }
 }
 
-fn redraw(
-    pool: &mut MemPool,
-    surface: &wl_surface::WlSurface,
-    dimensions: (u32, u32),
-    font_data: &[u8],
-    cb_contents: String,
-) {
-    let (buf_x, buf_y) = (dimensions.0 as usize, dimensions.1 as usize);
+fn main() {
+    // Setup default desktop environment
+    let (env, display, mut queue) = sctk::init_default_environment!(ClipboardExample, desktop)
+        .expect("unable to connect to a Wayland compositor.");
 
-    pool.resize(4 * buf_x * buf_y)
-        .expect("Failed to resize the memory pool.");
+    // Create event loop
+    let mut event_loop = sctk::reexports::calloop::EventLoop::<DispatchData>::new().unwrap();
 
-    let mut buf = vec![0; 4 * buf_x * buf_y];
-    let mut canvas =
-        andrew::Canvas::new(&mut buf, buf_x, buf_y, 4 * buf_x, andrew::Endian::native());
+    // Initial window dimentions
+    let mut dimentions = (320u32, 240u32);
 
-    let bg = rectangle::Rectangle::new((0, 0), (buf_x, buf_y), None, Some([255, 170, 20, 45]));
-    canvas.draw(&bg);
+    // Create surface
+    let surface = env.create_surface();
 
-    let text_box = rectangle::Rectangle::new(
-        (buf_x / 30, buf_y / 35),
-        (buf_x - 2 * (buf_x / 30), (buf_x as f32 / 14.) as usize),
-        Some((3, [255, 255, 255, 255], rectangle::Sides::ALL, Some(4))),
-        None,
-    );
-    canvas.draw(&text_box);
+    // Create window
+    let mut window = env
+        .create_window::<ConceptFrame, _>(surface, dimentions, move |event, mut dispatch_data| {
+            // Get our dispath data
+            let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
 
-    let helper_text = text::Text::new(
-        (buf_x / 25, buf_y / 30),
-        [255, 255, 255, 255],
-        font_data,
-        buf_x as f32 / 40.,
-        2.0,
-        "Press space to draw clipboard contents",
-    );
-    canvas.draw(&helper_text);
+            // Keep last event in priority order : Close > Configure > Refresh
+            let should_replace_event = match (&event, &dispatch_data.pending_frame_event) {
+                (_, &None)
+                | (_, &Some(WindowEvent::Refresh))
+                | (&WindowEvent::Configure { .. }, &Some(WindowEvent::Configure { .. }))
+                | (&WindowEvent::Close, _) => true,
+                _ => false,
+            };
 
-    let helper_text = text::Text::new(
-        (buf_x / 25, buf_y / 15),
-        [255, 255, 255, 255],
-        font_data,
-        buf_x as f32 / 40.,
-        2.0,
-        "Press 's' to store example text to clipboard",
-    );
-    canvas.draw(&helper_text);
+            if should_replace_event {
+                dispatch_data.pending_frame_event = Some(event);
+            }
+        })
+        .expect("failed to create a window.");
 
-    for i in (0..cb_contents.len()).step_by(36) {
-        let content = if cb_contents.len() < i + 36 {
-            cb_contents[i..].to_string()
-        } else {
-            cb_contents[i..i + 36].to_string()
+    // Set title and app id
+    window.set_title(String::from(
+        "smithay-clipboard example. Press C/P to copy/paste",
+    ));
+    window.set_app_id(String::from("smithay-clipboard-example"));
+
+    // Create memory pool
+    let mut pools = env
+        .create_double_pool(|_| {})
+        .expect("failed to create a memory pool.");
+
+    // Structure to track seats
+    let mut seats = Vec::<(WlSeat, Option<(WlKeyboard, EventLoopSource<_>)>)>::new();
+
+    // Process existing seats
+    for seat in env.get_all_seats() {
+        let seat_data = match seat::with_seat_data(&seat, |seat_data| seat_data.clone()) {
+            Some(seat_data) => seat_data,
+            _ => continue,
         };
-        let text = text::Text::new(
-            (
-                buf_x / 10,
-                buf_y / 8 + (i as f32 * buf_y as f32 / 1000.) as usize,
-            ),
-            [255, 255, 255, 255],
-            font_data,
-            buf_x as f32 / 40.,
-            2.0,
-            content,
-        );
-        canvas.draw(&text);
+
+        if seat_data.has_keyboard && !seat_data.defunct {
+            // Map keyboard for exising seats
+            let keyboard_mapping_result = keyboard::map_keyboard(
+                &seat,
+                None,
+                RepeatKind::System,
+                move |event, _, mut dispatch_data| {
+                    let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
+                    process_keyboard_event(event, dispatch_data);
+                },
+            );
+
+            // Suply event_loop's handle to handle key repeat
+            let event_loop_handle = event_loop.handle();
+
+            // Insert repeat rate handling source
+            match keyboard_mapping_result {
+                Ok((keyboard, repeat_source)) => {
+                    let source = event_loop_handle
+                        .insert_source(repeat_source, |_, _| {})
+                        .unwrap();
+                    seats.push((seat.detach(), Some((keyboard, source))));
+                }
+                Err(err) => {
+                    eprintln!(
+                        "Failed to map keyboard on seat {:?} : {:?}",
+                        seat_data.name, err
+                    );
+                    seats.push((seat.detach(), None));
+                }
+            }
+        } else {
+            // Handle seats without keyboard, since they can gain keyboard later
+            seats.push((seat.detach(), None));
+        }
     }
 
-    pool.seek(SeekFrom::Start(0)).unwrap();
-    pool.write_all(canvas.buffer).unwrap();
-    pool.flush().unwrap();
+    // Implement event listener for seats to handle capability change, etc
+    let event_loop_handle = event_loop.handle();
+    let _listener = env.listen_for_seats(move |seat, seat_data, _| {
+        // find the seat in the vec of seats or insert it
+        let idx = seats.iter().position(|(st, _)| st == &seat.detach());
+        let idx = idx.unwrap_or_else(|| {
+            seats.push((seat.detach(), None));
+            seats.len() - 1
+        });
+
+        let (_, mapped_keyboard) = &mut seats[idx];
+
+        if seat_data.has_keyboard && !seat_data.defunct {
+            // Map keyboard if it's not mapped already
+            if mapped_keyboard.is_none() {
+                let keyboard_mapping_result = keyboard::map_keyboard(
+                    &seat,
+                    None,
+                    RepeatKind::System,
+                    move |event, _, mut dispatch_data| {
+                        let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
+                        process_keyboard_event(event, dispatch_data);
+                    },
+                );
+
+                // Insert repeat rate source
+                match keyboard_mapping_result {
+                    Ok((keyboard, repeat_source)) => {
+                        let repeat_source = event_loop_handle
+                            .insert_source(repeat_source, |_, _| {})
+                            .unwrap();
+                        *mapped_keyboard = Some((keyboard, repeat_source));
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "Failed to map keyboard on seat {} : {:?}",
+                            seat_data.name, err
+                        );
+                    }
+                }
+            }
+        } else {
+            // We've changed seat capability, cleanup if it has some resources
+            if let Some((keyboard, repeat_source)) = mapped_keyboard.take() {
+                keyboard.release();
+                repeat_source.remove();
+            }
+        }
+    });
+
+    if !env.get_shell().unwrap().needs_configure() {
+        if let Some(pool) = pools.pool() {
+            draw(pool, window.surface().clone(), dimentions).expect("failed to draw.")
+        }
+        // Refresh our frame
+        window.refresh();
+    }
+
+    let _source_queue = event_loop
+        .handle()
+        .insert_source(sctk::WaylandSource::new(queue), |ret, _| {
+            if let Err(err) = ret {
+                panic!("Wayland connection lost: {:?}", err);
+            }
+        })
+        .unwrap();
+
+    let clipboard = Clipboard::new(display.get_display_ptr() as *mut _);
+    let mut dispatch_data = DispatchData::new(clipboard);
+
+    loop {
+        if let Some(frame_event) = dispatch_data.pending_frame_event.take() {
+            match frame_event {
+                WindowEvent::Close => break,
+                WindowEvent::Refresh => {
+                    window.refresh();
+                    window.surface().commit();
+                }
+                WindowEvent::Configure { new_size, .. } => {
+                    if let Some((w, h)) = new_size {
+                        window.resize(w, h);
+                        dimentions = (w, h)
+                    }
+                    window.refresh();
+                    if let Some(pool) = pools.pool() {
+                        draw(pool, window.surface().clone(), dimentions).expect("failed to draw.")
+                    }
+                }
+            }
+        }
+
+        display.flush().unwrap();
+
+        event_loop.dispatch(None, &mut dispatch_data).unwrap();
+    }
+}
+
+fn process_keyboard_event(event: KeyboardEvent, dispatch_data: &mut DispatchData) {
+    let text = match event {
+        KeyboardEvent::Key {
+            state,
+            utf8: Some(text),
+            ..
+        } if state == KeyState::Pressed => text,
+        KeyboardEvent::Repeat {
+            utf8: Some(text), ..
+        } => text,
+        _ => return,
+    };
+
+    // We're not giving seat explicitly to Clipboard, since the primary use case for
+    // smithay-clipboard is applications without easy access to such things, since they are using
+    // cross platform toolkits, etc.
+    match text.as_str() {
+        // Paste primary
+        "P" => {
+            let contents = dispatch_data
+                .clipboard
+                .load_primary(None)
+                .unwrap_or_else(|_| String::from("Failed to load primary selection"));
+            // println!("Paste primary: {}", contents);
+        }
+        // Paste
+        "p" => {
+            let contents = dispatch_data
+                .clipboard
+                .load(None)
+                .unwrap_or_else(|_| String::from("Failed to load primary selection"));
+            // println!("Paste: {}", contents);
+        }
+        // Copy primary
+        "C" => {
+            let text = String::from("Copy primary");
+            dispatch_data.clipboard.store(None, text.clone());
+            // println!("Copied string into primary selection buffer: {}", text);
+        }
+        // Copy
+        "c" => {
+            let text = String::from("Copy");
+            dispatch_data.clipboard.store(None, text.clone());
+            // println!("Copied string: {}", text);
+        }
+        _ => (),
+    }
+}
+
+fn draw(
+    pool: &mut MemPool,
+    surface: WlSurface,
+    dimensions: (u32, u32),
+) -> Result<(), std::io::Error> {
+    pool.resize((4 * dimensions.0 * dimensions.1) as usize)
+        .expect("failed to resize memory pool");
+
+    {
+        pool.seek(SeekFrom::Start(0))?;
+        let mut writer = BufWriter::new(&mut *pool);
+        for _ in 0..dimensions.0 * dimensions.1 {
+            // ARGB color written in LE, so it's #FF1C1C1C
+            writer.write_all(&[0x1c, 0x1c, 0x1c, 0xff])?;
+        }
+        writer.flush()?;
+    }
 
     let new_buffer = pool.buffer(
         0,
-        buf_x as i32,
-        buf_y as i32,
-        4 * buf_x as i32,
+        dimensions.0 as i32,
+        dimensions.1 as i32,
+        4 * dimensions.0 as i32,
         wl_shm::Format::Argb8888,
     );
     surface.attach(Some(&new_buffer), 0, 0);
     surface.commit();
+
+    Ok(())
 }

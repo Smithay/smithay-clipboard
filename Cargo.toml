@@ -10,8 +10,10 @@ license = "MIT"
 keywords = ["clipboard", "wayland"]
 
 [dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.6.1" }
-nix = "0.14.1"
+sctk = { package = "smithay-client-toolkit", version = "0.8.1", default-features = false }
 
 [dev-dependencies]
-andrew = "0.2"
+sctk = { package = "smithay-client-toolkit", version = "0.8.1"}
+
+[patch.crates-io]
+calloop = { path = "../calloop" }

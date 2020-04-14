@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Minimal rust version was bumped to 1.40.0
+
 ## 0.4.0 -- 2020-03-09
 
 - Fix crash when receiving non-utf8 data

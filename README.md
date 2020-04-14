@@ -4,7 +4,13 @@
 
 # Smithay Clipboard
 
-This crate provides access to the wayland clipboard.
+This crate provides access to the Wayland clipboard for applications
+already using some sort of GUI toolkit or a windowing library, like
+[winit](https://github.com/rust-windowing/winit), since you should
+have some surface around to receive keyboard/pointer events.
+
+If you want to access clipboard from the CLI or to write clipboard manager,
+this is not what you're looking for.
 
 ## Documentation
 

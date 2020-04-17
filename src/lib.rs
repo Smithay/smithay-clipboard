@@ -6,6 +6,7 @@ use std::io::Result as IoResult;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+use sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager;
 use sctk::reexports::protocols::unstable::primary_selection::v1::client::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
 use sctk::reexports::protocols::misc::gtk_primary_selection::client::gtk_primary_selection_device_manager::GtkPrimarySelectionDeviceManager;
 
@@ -14,7 +15,9 @@ use sctk::reexports::client::protocol::wl_pointer::{Event as PointerEvent, WlPoi
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::{Attached, DispatchData, Display, EventQueue};
 
-use sctk::data_device::{DataDevice, DataDeviceHandler, DataDeviceHandling, DndEvent};
+use sctk::data_device::{
+    DataDevice, DataDeviceHandler, DataDeviceHandling, DataSource, DataSourceEvent, DndEvent,
+};
 use sctk::environment::{Environment, SimpleGlobal};
 use sctk::seat::keyboard::{self, RepeatKind};
 use sctk::seat::{self, SeatData, SeatHandler, SeatHandling, SeatListener};
@@ -22,6 +25,10 @@ use sctk::seat::{self, SeatData, SeatHandler, SeatHandling, SeatListener};
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 
 use std::io::prelude::*;
+
+mod mime;
+
+use mime::MimeType;
 
 struct SmithayClipboard {
     seats: SeatHandler,
@@ -80,6 +87,12 @@ enum ClipboardRequest {
     Exit,
 }
 
+impl ClipboardRequest {
+    fn seat(&self) -> Option<String> {
+        None
+    }
+}
+
 impl Clipboard {
     /// Creates new clipboard which will be running on its own thread with its own event queue to
     /// handle clipboard requests.
@@ -112,9 +125,8 @@ impl Clipboard {
     /// `None` it'll use the latest seat observed in pointer/keyboard events.
     pub fn load(&self, seat_name: Option<String>) -> IoResult<String> {
         let request = ClipboardRequest::Load(LoadRequestData::new(seat_name));
-        println!("REQUESTED PASTE");
         let _ = self.request_sender.send(request);
-        Ok(String::from("Hello"))
+        self.request_receiver.recv().unwrap()
     }
 
     /// Store to a clipboard
@@ -133,7 +145,7 @@ impl Clipboard {
     pub fn load_primary(&self, seat_name: Option<String>) -> IoResult<String> {
         let request = ClipboardRequest::LoadPrimary(LoadRequestData::new(seat_name));
         let _ = self.request_sender.send(request);
-        Ok(String::from("Hello"))
+        self.request_receiver.recv().unwrap()
     }
 
     /// Store to a primary clipboard
@@ -228,6 +240,9 @@ fn clipboard_thread(
     // Check for primary selection providers
     let primary_selection = env.get_global::<ZwpPrimarySelectionDeviceManagerV1>();
     let gtk_primary_selection = env.get_global::<GtkPrimarySelectionDeviceManager>();
+
+    // Just shutdown thread if global is not available?
+    let data_device_manager = env.get_global::<WlDataDeviceManager>().unwrap();
 
     let mut seats = Vec::<Seat>::new();
 
@@ -353,6 +368,8 @@ fn clipboard_thread(
             // will be instant.
             sleep_amount = 0;
 
+            let req = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+
             // Notify back that we have nothing to do.
             let (seat, serial) = match (
                 dispatch_data.last_seat.as_ref(),
@@ -362,44 +379,67 @@ fn clipboard_thread(
                 _ => continue,
             };
 
-            match request {
-                ClipboardRequest::Load(load_data) => {
-                    let req = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+            // FIXME - get seat name from the request
 
+            match request {
+                ClipboardRequest::Load(_) => {
                     env.with_data_device(&seat, |device| {
-                        device.with_selection(|offer| {
-                            println!("IN OFFER");
-                            if let Some(offer) = offer {
-                                offer.with_mime_types(|types| {});
-                                println!("BEFORE RECEIVE");
-                                let mut reader =
-                                    offer.receive("text/plain;charset=utf-8".into()).unwrap();
-                                println!("AFTER RECEIVE");
-                                let mut contents = String::new();
-                                println!("READING TO STRING");
-                                // XXX I CAN BLOCK!!!
-                                reader.read_to_string(&mut contents);
-                                println!("READ");
-                                println!("PASTED: {}", contents);
-                            }
-                        });
+                        let (mut reader, mime_type) = match device.with_selection(|offer| {
+                            // Check that we have offer
+                            let offer = match offer {
+                                Some(offer) => offer,
+                                None => return None,
+                            };
+
+                            // Check that we can work with requested mime type and pick the one
+                            // that suits us more
+                            let mime_type = match offer.with_mime_types(MimeType::find_allowed) {
+                                Some(mime_type) => mime_type,
+                                None => return None,
+                            };
+
+                            // Request given mime type
+                            let reader = offer.receive(mime_type.to_string()).unwrap();
+                            Some((reader, mime_type))
+                        }) {
+                            Some((reader, mime_type)) => (reader, mime_type),
+                            None => return (),
+                        };
+
+                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+
+                        let mut contents = String::new();
+                        let result = reader.read_to_string(&mut contents).map(|_| contents);
+
+                        clipboard_reply_sender.send(result).unwrap();
                     })
                     .unwrap();
-                    let req = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
                 }
-                ClipboardRequest::LoadPrimary(load_data) => {}
+                ClipboardRequest::LoadPrimary(_) => {}
                 ClipboardRequest::Store(store_data) => {
-                    // env.with_data_device(&seat, |device| {
-                    //     device.set_selection
-                    // })
+                    let contents = store_data.contents.clone();
+                    let data_source = DataSource::new(
+                        &data_device_manager,
+                        [MimeType::TextPlainUtf8.to_string()].into_iter(),
+                        move |event, _| match event {
+                            DataSourceEvent::Send { mut pipe, .. } => {
+                                write!(pipe, "{}", contents).unwrap();
+                            }
+                            _ => (),
+                        },
+                    );
+
+                    env.with_data_device(&seat, |device| {
+                        device.set_selection(&Some(data_source), serial);
+
+                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+                    });
                 }
-                ClipboardRequest::StorePrimary(store_data) => {}
+                ClipboardRequest::StorePrimary(_) => {}
                 ClipboardRequest::Exit => break,
             }
         }
 
-        let req = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
-        let _ = queue.display().flush();
         let pending_events = queue.dispatch_pending(&mut dispatch_data, |_, _, _| {});
         std::thread::sleep(std::time::Duration::from_millis(sleep_amount));
     }

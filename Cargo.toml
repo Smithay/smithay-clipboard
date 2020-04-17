@@ -11,6 +11,9 @@ keywords = ["clipboard", "wayland"]
 
 [dependencies]
 sctk = { package = "smithay-client-toolkit", version = "0.8.1", default-features = false }
+# We have to specify `wayland-client` as dependency, since downstream is failing
+# to compile, in case it's using old `wayland-client`
+wayland-client = { version = "0.25.0", features = ["dlopen"] }
 
 [dev-dependencies]
 sctk = { package = "smithay-client-toolkit", version = "0.8.1"}

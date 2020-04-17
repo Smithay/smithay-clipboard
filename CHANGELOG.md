@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Minimal rust version was bumped to 1.40.0
+- Add support for `UTF8_STRING` mime type
 
 ## 0.4.0 -- 2020-03-09
 

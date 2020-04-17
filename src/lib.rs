@@ -4,7 +4,6 @@
 use std::ffi::c_void;
 use std::io::Result as IoResult;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 
 use sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager;
 use sctk::reexports::protocols::unstable::primary_selection::v1::client::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
@@ -13,28 +12,50 @@ use sctk::reexports::protocols::misc::gtk_primary_selection::client::gtk_primary
 use sctk::reexports::client::protocol::wl_keyboard::{Event as KeyboardEvent, WlKeyboard};
 use sctk::reexports::client::protocol::wl_pointer::{Event as PointerEvent, WlPointer};
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
-use sctk::reexports::client::{Attached, DispatchData, Display, EventQueue};
+use sctk::reexports::client::{Attached, DispatchData, Display};
 
 use sctk::data_device::{
     DataDevice, DataDeviceHandler, DataDeviceHandling, DataSource, DataSourceEvent, DndEvent,
 };
 use sctk::environment::{Environment, SimpleGlobal};
-use sctk::seat::keyboard::{self, RepeatKind};
 use sctk::seat::{self, SeatData, SeatHandler, SeatHandling, SeatListener};
-
-use std::os::unix::io::{FromRawFd, IntoRawFd};
 
 use std::io::prelude::*;
 
 mod mime;
+mod primary;
 
 use mime::MimeType;
+use primary::{
+    PrimaryDataDeviceHandler, PrimaryDevice, PrimarySelectionHandling, PrimarySource,
+    PrimarySourceEvent,
+};
 
 struct SmithayClipboard {
     seats: SeatHandler,
-    primary_selection: SimpleGlobal<ZwpPrimarySelectionDeviceManagerV1>,
+    primary_selection_manager: PrimaryDataDeviceHandler,
     gtk_primary_selection: SimpleGlobal<GtkPrimarySelectionDeviceManager>,
     data_device_manager: sctk::data_device::DataDeviceHandler,
+}
+
+impl PrimarySelectionHandling for SmithayClipboard {
+    fn with_primary_device<F: FnOnce(&PrimaryDevice)>(
+        &self,
+        seat: &WlSeat,
+        f: F,
+    ) -> Result<(), ()> {
+        self.primary_selection_manager.with_primary_device(seat, f)
+    }
+}
+
+impl PrimarySelectionHandling for Environment<SmithayClipboard> {
+    fn with_primary_device<F: FnOnce(&PrimaryDevice)>(
+        &self,
+        seat: &WlSeat,
+        f: F,
+    ) -> Result<(), ()> {
+        self.with_inner(|inner| inner.with_primary_device(seat, f))
+    }
 }
 
 impl DataDeviceHandling for SmithayClipboard {
@@ -162,9 +183,10 @@ impl SmithayClipboard {
     fn new() -> Self {
         let mut seats = SeatHandler::new();
         let data_device_manager = DataDeviceHandler::init(&mut seats);
+        let primary_selection_manager = PrimaryDataDeviceHandler::init(&mut seats);
         Self {
             seats,
-            primary_selection: SimpleGlobal::new(),
+            primary_selection_manager,
             gtk_primary_selection: SimpleGlobal::new(),
             data_device_manager,
         }
@@ -182,7 +204,7 @@ impl SeatHandling for SmithayClipboard {
 
 sctk::environment!(SmithayClipboard,
     singles = [
-    ZwpPrimarySelectionDeviceManagerV1 => primary_selection,
+    ZwpPrimarySelectionDeviceManagerV1 => primary_selection_manager,
     GtkPrimarySelectionDeviceManager => gtk_primary_selection,
     sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager => data_device_manager,
     ],
@@ -238,7 +260,9 @@ fn clipboard_thread(
         .unwrap();
 
     // Check for primary selection providers
-    let primary_selection = env.get_global::<ZwpPrimarySelectionDeviceManagerV1>();
+    let primary_selection_manager = env
+        .get_global::<ZwpPrimarySelectionDeviceManagerV1>()
+        .unwrap();
     let gtk_primary_selection = env.get_global::<GtkPrimarySelectionDeviceManager>();
 
     // Just shutdown thread if global is not available?
@@ -403,7 +427,10 @@ fn clipboard_thread(
                             Some((reader, mime_type))
                         }) {
                             Some((reader, mime_type)) => (reader, mime_type),
-                            None => return (),
+                            None => {
+                                clipboard_reply_sender.send(Ok(String::new())).unwrap();
+                                return ();
+                            }
                         };
 
                         let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
@@ -415,7 +442,42 @@ fn clipboard_thread(
                     })
                     .unwrap();
                 }
-                ClipboardRequest::LoadPrimary(_) => {}
+                ClipboardRequest::LoadPrimary(_) => {
+                    env.with_primary_device(&seat, |device| {
+                        let (mut reader, mime_type) = match device.with_selection(|offer| {
+                            // Check that we have offer
+                            let offer = match offer {
+                                Some(offer) => offer,
+                                None => return None,
+                            };
+
+                            // Check that we can work with requested mime type and pick the one
+                            // that suits us more
+                            let mime_type = match offer.with_mime_types(MimeType::find_allowed) {
+                                Some(mime_type) => mime_type,
+                                None => return None,
+                            };
+
+                            // Request given mime type
+                            let reader = offer.receive(mime_type.to_string()).unwrap();
+                            Some((reader, mime_type))
+                        }) {
+                            Some((reader, mime_type)) => (reader, mime_type),
+                            None => {
+                                clipboard_reply_sender.send(Ok(String::new())).unwrap();
+                                return ();
+                            }
+                        };
+
+                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+
+                        let mut contents = String::new();
+                        let result = reader.read_to_string(&mut contents).map(|_| contents);
+
+                        clipboard_reply_sender.send(result).unwrap();
+                    })
+                    .unwrap();
+                }
                 ClipboardRequest::Store(store_data) => {
                     let contents = store_data.contents.clone();
                     let data_source = DataSource::new(
@@ -435,7 +497,25 @@ fn clipboard_thread(
                         let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
                     });
                 }
-                ClipboardRequest::StorePrimary(_) => {}
+                ClipboardRequest::StorePrimary(store_data) => {
+                    let contents = store_data.contents.clone();
+                    let data_source = PrimarySource::new(
+                        &primary_selection_manager,
+                        [MimeType::TextPlainUtf8.to_string()].into_iter(),
+                        move |event, _| match event {
+                            PrimarySourceEvent::Send { mut pipe, .. } => {
+                                write!(pipe, "{}", &contents[0..contents.as_bytes().len() / 8]).unwrap();
+                            }
+                            _ => (),
+                        },
+                    );
+
+                    env.with_primary_device(&seat, |device| {
+                        device.set_selection(&Some(data_source), serial);
+
+                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+                    });
+                }
                 ClipboardRequest::Exit => break,
             }
         }

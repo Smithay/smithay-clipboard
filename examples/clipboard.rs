@@ -34,7 +34,7 @@ impl DispatchData {
 
 fn main() {
     // Setup default desktop environment
-    let (env, display, mut queue) = sctk::init_default_environment!(ClipboardExample, desktop)
+    let (env, display, queue) = sctk::init_default_environment!(ClipboardExample, desktop)
         .expect("unable to connect to a Wayland compositor.");
 
     // Create event loop
@@ -89,8 +89,12 @@ fn main() {
         };
 
         if seat_data.has_keyboard && !seat_data.defunct {
+            // Suply event_loop's handle to handle key repeat
+            let event_loop_handle = event_loop.handle();
+
             // Map keyboard for exising seats
-            let keyboard_mapping_result = keyboard::map_keyboard(
+            let keyboard_mapping_result = keyboard::map_keyboard_repeat(
+                event_loop_handle,
                 &seat,
                 None,
                 RepeatKind::System,
@@ -100,16 +104,10 @@ fn main() {
                 },
             );
 
-            // Suply event_loop's handle to handle key repeat
-            let event_loop_handle = event_loop.handle();
-
             // Insert repeat rate handling source
             match keyboard_mapping_result {
                 Ok((keyboard, repeat_source)) => {
-                    let source = event_loop_handle
-                        .insert_source(repeat_source, |_, _| {})
-                        .unwrap();
-                    seats.push((seat.detach(), Some((keyboard, source))));
+                    seats.push((seat.detach(), Some((keyboard, repeat_source))));
                 }
                 Err(err) => {
                     eprintln!(
@@ -140,7 +138,8 @@ fn main() {
         if seat_data.has_keyboard && !seat_data.defunct {
             // Map keyboard if it's not mapped already
             if mapped_keyboard.is_none() {
-                let keyboard_mapping_result = keyboard::map_keyboard(
+                let keyboard_mapping_result = keyboard::map_keyboard_repeat(
+                    event_loop_handle.clone(),
                     &seat,
                     None,
                     RepeatKind::System,
@@ -153,9 +152,6 @@ fn main() {
                 // Insert repeat rate source
                 match keyboard_mapping_result {
                     Ok((keyboard, repeat_source)) => {
-                        let repeat_source = event_loop_handle
-                            .insert_source(repeat_source, |_, _| {})
-                            .unwrap();
                         *mapped_keyboard = Some((keyboard, repeat_source));
                     }
                     Err(err) => {
@@ -170,7 +166,7 @@ fn main() {
             // We've changed seat capability, cleanup if it has some resources
             if let Some((keyboard, repeat_source)) = mapped_keyboard.take() {
                 keyboard.release();
-                repeat_source.remove();
+                event_loop_handle.remove(repeat_source);
             }
         }
     });
@@ -183,13 +179,8 @@ fn main() {
         window.refresh();
     }
 
-    let _source_queue = event_loop
-        .handle()
-        .insert_source(sctk::WaylandSource::new(queue), |ret, _| {
-            if let Err(err) = ret {
-                panic!("Wayland connection lost: {:?}", err);
-            }
-        })
+    sctk::WaylandSource::new(queue)
+        .quick_insert(event_loop.handle())
         .unwrap();
 
     let clipboard = Clipboard::new(display.get_display_ptr() as *mut _);
@@ -245,7 +236,7 @@ fn process_keyboard_event(event: KeyboardEvent, dispatch_data: &mut DispatchData
                 .clipboard
                 .load_primary(None)
                 .unwrap_or_else(|_| String::from("Failed to load primary selection"));
-            // println!("Paste primary: {}", contents);
+            println!("Paste from primary clipboard: {}", contents);
         }
         // Paste
         "p" => {
@@ -253,19 +244,19 @@ fn process_keyboard_event(event: KeyboardEvent, dispatch_data: &mut DispatchData
                 .clipboard
                 .load(None)
                 .unwrap_or_else(|_| String::from("Failed to load primary selection"));
-            // println!("Paste: {}", contents);
+            println!("Paste: {}", contents);
         }
         // Copy primary
         "C" => {
             let text = String::from("Copy primary");
             dispatch_data.clipboard.store(None, text.clone());
-            // println!("Copied string into primary selection buffer: {}", text);
+            println!("Copied string into primary selection buffer: {}", text);
         }
         // Copy
         "c" => {
             let text = String::from("Copy");
             dispatch_data.clipboard.store(None, text.clone());
-            // println!("Copied string: {}", text);
+            println!("Copied string: {}", text);
         }
         _ => (),
     }

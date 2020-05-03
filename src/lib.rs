@@ -1,13 +1,8 @@
-// FIXME - docs and exmaple with docs
-
-// FIXME versions!!!
 use std::ffi::c_void;
 use std::io::Result as IoResult;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager;
-use sctk::reexports::protocols::unstable::primary_selection::v1::client::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
-use sctk::reexports::protocols::misc::gtk_primary_selection::client::gtk_primary_selection_device_manager::GtkPrimarySelectionDeviceManager;
 
 use sctk::reexports::client::protocol::wl_keyboard::{Event as KeyboardEvent, WlKeyboard};
 use sctk::reexports::client::protocol::wl_pointer::{Event as PointerEvent, WlPointer};
@@ -18,43 +13,37 @@ use sctk::data_device::{
     DataDevice, DataDeviceHandler, DataDeviceHandling, DataSource, DataSourceEvent, DndEvent,
 };
 use sctk::environment::{Environment, SimpleGlobal};
+use sctk::primary_selection::{
+    PrimarySelectionDevice, PrimarySelectionDeviceManager, PrimarySelectionHandler,
+    PrimarySelectionHandling, PrimarySelectionSource, PrimarySelectionSourceEvent,
+};
 use sctk::seat::{self, SeatData, SeatHandler, SeatHandling, SeatListener};
 
 use std::io::prelude::*;
 
 mod mime;
-mod primary;
 
 use mime::MimeType;
-use primary::{
-    PrimaryDataDeviceHandler, PrimaryDevice, PrimarySelectionHandling, PrimarySource,
-    PrimarySourceEvent,
-};
 
 struct SmithayClipboard {
     seats: SeatHandler,
-    primary_selection_manager: PrimaryDataDeviceHandler,
-    gtk_primary_selection: SimpleGlobal<GtkPrimarySelectionDeviceManager>,
-    data_device_manager: sctk::data_device::DataDeviceHandler,
+    primary_selection_manager: PrimarySelectionHandler,
+    data_device_manager: DataDeviceHandler,
 }
 
 impl PrimarySelectionHandling for SmithayClipboard {
-    fn with_primary_device<F: FnOnce(&PrimaryDevice)>(
+    fn with_primary_selection<F: FnOnce(&PrimarySelectionDevice)>(
         &self,
         seat: &WlSeat,
         f: F,
     ) -> Result<(), ()> {
-        self.primary_selection_manager.with_primary_device(seat, f)
+        self.primary_selection_manager
+            .with_primary_selection(seat, f)
     }
-}
 
-impl PrimarySelectionHandling for Environment<SmithayClipboard> {
-    fn with_primary_device<F: FnOnce(&PrimaryDevice)>(
-        &self,
-        seat: &WlSeat,
-        f: F,
-    ) -> Result<(), ()> {
-        self.with_inner(|inner| inner.with_primary_device(seat, f))
+    fn get_primary_selection_manager(&self) -> Option<PrimarySelectionDeviceManager> {
+        self.primary_selection_manager
+            .get_primary_selection_manager()
     }
 }
 
@@ -183,11 +172,10 @@ impl SmithayClipboard {
     fn new() -> Self {
         let mut seats = SeatHandler::new();
         let data_device_manager = DataDeviceHandler::init(&mut seats);
-        let primary_selection_manager = PrimaryDataDeviceHandler::init(&mut seats);
+        let primary_selection_manager = PrimarySelectionHandler::init(&mut seats);
         Self {
             seats,
             primary_selection_manager,
-            gtk_primary_selection: SimpleGlobal::new(),
             data_device_manager,
         }
     }
@@ -204,8 +192,8 @@ impl SeatHandling for SmithayClipboard {
 
 sctk::environment!(SmithayClipboard,
     singles = [
-    ZwpPrimarySelectionDeviceManagerV1 => primary_selection_manager,
-    GtkPrimarySelectionDeviceManager => gtk_primary_selection,
+    sctk::reexports::protocols::unstable::primary_selection::v1::client::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1 => primary_selection_manager,
+    sctk::reexports::protocols::misc::gtk_primary_selection::client::gtk_primary_selection_device_manager::GtkPrimarySelectionDeviceManager => primary_selection_manager,
     sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager => data_device_manager,
     ],
 multis = [
@@ -259,14 +247,11 @@ fn clipboard_thread(
         .and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()))
         .unwrap();
 
-    // Check for primary selection providers
-    let primary_selection_manager = env
-        .get_global::<ZwpPrimarySelectionDeviceManagerV1>()
-        .unwrap();
-    let gtk_primary_selection = env.get_global::<GtkPrimarySelectionDeviceManager>();
-
     // Just shutdown thread if global is not available?
     let data_device_manager = env.get_global::<WlDataDeviceManager>().unwrap();
+
+    // Get primary selection device manager
+    let primary_selection_manager = env.get_primary_selection_manager();
 
     let mut seats = Vec::<Seat>::new();
 
@@ -443,7 +428,7 @@ fn clipboard_thread(
                     .unwrap();
                 }
                 ClipboardRequest::LoadPrimary(_) => {
-                    env.with_primary_device(&seat, |device| {
+                    env.with_primary_selection(&seat, |device| {
                         let (mut reader, mime_type) = match device.with_selection(|offer| {
                             // Check that we have offer
                             let offer = match offer {
@@ -480,9 +465,8 @@ fn clipboard_thread(
                 }
                 ClipboardRequest::Store(store_data) => {
                     let contents = store_data.contents.clone();
-                    let data_source = DataSource::new(
-                        &data_device_manager,
-                        [MimeType::TextPlainUtf8.to_string()].into_iter(),
+                    let data_source = env.new_data_source(
+                        vec![MimeType::TextPlainUtf8.to_string()],
                         move |event, _| match event {
                             DataSourceEvent::Send { mut pipe, .. } => {
                                 write!(pipe, "{}", contents).unwrap();
@@ -499,18 +483,17 @@ fn clipboard_thread(
                 }
                 ClipboardRequest::StorePrimary(store_data) => {
                     let contents = store_data.contents.clone();
-                    let data_source = PrimarySource::new(
-                        &primary_selection_manager,
-                        [MimeType::TextPlainUtf8.to_string()].into_iter(),
+                    let data_source = env.new_primary_selection_source(
+                        vec![MimeType::TextPlainUtf8.to_string()],
                         move |event, _| match event {
-                            PrimarySourceEvent::Send { mut pipe, .. } => {
-                                write!(pipe, "{}", &contents[0..contents.as_bytes().len() / 8]).unwrap();
+                            PrimarySelectionSourceEvent::Send { mut pipe, .. } => {
+                                write!(pipe, "{}", &contents).unwrap();
                             }
                             _ => (),
                         },
                     );
 
-                    env.with_primary_device(&seat, |device| {
+                    env.with_primary_selection(&seat, |device| {
                         device.set_selection(&Some(data_source), serial);
 
                         let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());

@@ -1,6 +1,6 @@
 [package]
 name = "smithay-clipboard"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Lucas Timmins <timmins.s.lucas@gmail.com>", "Victor Berger <victor.berger@m4x.org>"]
 edition = "2018"
 description = "Provides access to the wayland clipboard for client applications."
@@ -10,15 +10,11 @@ license = "MIT"
 keywords = ["clipboard", "wayland"]
 
 [dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.8.1", default-features = false }
+sctk = { package = "smithay-client-toolkit", version = "0.9.1", default-features = false, features = ["calloop"] }
 # We have to specify `wayland-client` as dependency, since downstream is failing
-# to compile, in case it's using old `wayland-client`
-wayland-client = { version = "0.25.0", features = ["dlopen"] }
-
-nix = "0.17"
+# to compile, in case it's different version of `wayland-client` somewhere
+# in its dependency graph.
+wayland-client = { version = "0.26.3", features = ["dlopen"] }
 
 [dev-dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.8.1"}
-
-[patch.crates-io]
-calloop = { path = "../calloop" }
+sctk = { package = "smithay-client-toolkit", version = "0.9.1"}

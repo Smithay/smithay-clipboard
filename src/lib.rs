@@ -4,19 +4,23 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager;
 
+use sctk::reexports::calloop::channel::{self as calloop_channel};
+use sctk::reexports::calloop::Source as EventLoopSource;
 use sctk::reexports::client::protocol::wl_keyboard::{Event as KeyboardEvent, WlKeyboard};
 use sctk::reexports::client::protocol::wl_pointer::{Event as PointerEvent, WlPointer};
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::{Attached, DispatchData, Display};
 
 use sctk::data_device::{
-    DataDevice, DataDeviceHandler, DataDeviceHandling, DataSource, DataSourceEvent, DndEvent,
+    DataDevice, DataDeviceHandler, DataDeviceHandling, DataSourceEvent, DndEvent,
 };
-use sctk::environment::{Environment, SimpleGlobal};
+use sctk::environment::Environment;
+
 use sctk::primary_selection::{
     PrimarySelectionDevice, PrimarySelectionDeviceManager, PrimarySelectionHandler,
-    PrimarySelectionHandling, PrimarySelectionSource, PrimarySelectionSourceEvent,
+    PrimarySelectionHandling, PrimarySelectionSourceEvent,
 };
+
 use sctk::seat::{self, SeatData, SeatHandler, SeatHandling, SeatListener};
 
 use std::io::prelude::*;
@@ -61,10 +65,11 @@ impl DataDeviceHandling for SmithayClipboard {
 }
 
 pub struct Clipboard {
-    request_sender: Sender<ClipboardRequest>,
+    request_sender: calloop_channel::Sender<ClipboardRequest>,
     request_receiver: Receiver<IoResult<String>>,
 }
 
+#[derive(Debug)]
 struct StoreRequestData {
     pub seat_name: Option<String>,
     pub contents: String,
@@ -79,6 +84,7 @@ impl StoreRequestData {
     }
 }
 
+#[derive(Debug)]
 struct LoadRequestData {
     pub seat_name: Option<String>,
 }
@@ -89,6 +95,7 @@ impl LoadRequestData {
     }
 }
 
+#[derive(Debug)]
 enum ClipboardRequest {
     Store(StoreRequestData),
     StorePrimary(StoreRequestData),
@@ -112,7 +119,7 @@ impl Clipboard {
         let display = unsafe { Display::from_external_display(display as *mut _) };
 
         // Create channel to send data to clipboard thread
-        let (request_sender, clipboard_request_receiver) = mpsc::channel();
+        let (request_sender, clipboard_request_receiver) = calloop_channel::channel();
         // Create channel to get data from the clipboard thread
         let (clipboard_reply_sender, request_receiver) = mpsc::channel();
 
@@ -235,7 +242,7 @@ impl ClipboardDispatchData {
 /// Handle clipboard requests.
 fn clipboard_thread(
     display: Display,
-    request_recv: Receiver<ClipboardRequest>,
+    request_recv: calloop_channel::Channel<ClipboardRequest>,
     clipboard_reply_sender: Sender<IoResult<String>>,
 ) {
     let mut queue = display.create_event_queue();
@@ -247,11 +254,11 @@ fn clipboard_thread(
         .and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()))
         .unwrap();
 
-    // Just shutdown thread if global is not available?
-    let data_device_manager = env.get_global::<WlDataDeviceManager>().unwrap();
-
     // Get primary selection device manager
-    let primary_selection_manager = env.get_primary_selection_manager();
+    let _primary_selection_manager = env.get_primary_selection_manager();
+
+    let mut event_loop =
+        sctk::reexports::calloop::EventLoop::<ClipboardDispatchData>::new().unwrap();
 
     let mut seats = Vec::<Seat>::new();
 
@@ -276,7 +283,7 @@ fn clipboard_thread(
             let keyboard = seat.get_keyboard();
             let seat_clone = seat.clone();
 
-            keyboard.quick_assign(move |keyboard, event, dispatch_data| {
+            keyboard.quick_assign(move |_, event, dispatch_data| {
                 keyboard_handler(seat_clone.detach(), event, dispatch_data);
             });
 
@@ -290,7 +297,7 @@ fn clipboard_thread(
             let pointer = seat.get_pointer();
             let seat_clnoe = seat.clone();
 
-            pointer.quick_assign(move |pointer, event, dispatch_data| {
+            pointer.quick_assign(move |_, event, dispatch_data| {
                 pointer_handler(seat_clnoe.detach(), event, dispatch_data);
             });
 
@@ -318,7 +325,7 @@ fn clipboard_thread(
                 let keyboard = seat.get_keyboard();
                 let seat_clone = seat.clone();
 
-                keyboard.quick_assign(move |keyboard, event, dispatch_data| {
+                keyboard.quick_assign(move |_, event, dispatch_data| {
                     keyboard_handler(seat_clone.detach(), event, dispatch_data);
                 });
 
@@ -336,7 +343,7 @@ fn clipboard_thread(
                 let pointer = seat.get_pointer();
                 let seat_clone = seat.clone();
 
-                pointer.quick_assign(move |pointer, event, dispatch_data| {
+                pointer.quick_assign(move |_, event, dispatch_data| {
                     pointer_handler(seat_clone.detach(), event, dispatch_data);
                 });
 
@@ -356,155 +363,152 @@ fn clipboard_thread(
     // Data to track latest seat
     let mut dispatch_data = ClipboardDispatchData::new();
 
-    // FIXME - we should use select(3) and friends and just have 2 events sources, one from users
-    // and one is wayland queue, so we can get rid of this heuristic based logic with sleeps and
-    // wakeups.
+    event_loop
+        .handle()
+        .insert_source(request_recv, |event, _, _| match event {
+            calloop_channel::Event::Msg(request) => {
+                println!("{:?}", request);
+            }
+            _ => (),
+        })
+        .unwrap();
 
-    // We should provide lower sleep amounts in a moments of spaming our clipboard
-    let mut sleep_amount = 0;
-
-    // Provide our clipboard a warm start, so 16 initial cycles will be at 1ms and other will go
-    // like 1 2 4 8 16 32 50 50 and so on
-    let mut warm_start_amount = 0;
-    // FIXME UTF8_STRING mime type and friends.
-
-    // Flush display
-    let _ = queue.display().flush();
+    sctk::WaylandSource::new(queue)
+        .quick_insert(event_loop.handle())
+        .unwrap();
 
     loop {
-        if let Ok(request) = request_recv.try_recv() {
-            // Lower sleep amount to zero, so the next recv dispatch of the event queue and recv
-            // will be instant.
-            sleep_amount = 0;
+        // if let Ok(request) = Err(()) {
+        //     // Lower sleep amount to zero, so the next recv dispatch of the event queue and recv
+        //     // will be instant.
+        //     // let req = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
 
-            let req = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+        //     // Notify back that we have nothing to do.
+        //     let (seat, serial) = match (
+        //         dispatch_data.last_seat.as_ref(),
+        //         dispatch_data.last_serial.as_ref(),
+        //     ) {
+        //         (Some(seat), Some(serial)) => (seat.clone(), serial.clone()),
+        //         _ => continue,
+        //     };
 
-            // Notify back that we have nothing to do.
-            let (seat, serial) = match (
-                dispatch_data.last_seat.as_ref(),
-                dispatch_data.last_serial.as_ref(),
-            ) {
-                (Some(seat), Some(serial)) => (seat.clone(), serial.clone()),
-                _ => continue,
-            };
+        //     // FIXME - get seat name from the request
 
-            // FIXME - get seat name from the request
+        //     match request {
+        //         ClipboardRequest::Load(_) => {
+        //             env.with_data_device(&seat, |device| {
+        //                 let (mut reader, mime_type) = match device.with_selection(|offer| {
+        //                     // Check that we have offer
+        //                     let offer = match offer {
+        //                         Some(offer) => offer,
+        //                         None => return None,
+        //                     };
 
-            match request {
-                ClipboardRequest::Load(_) => {
-                    env.with_data_device(&seat, |device| {
-                        let (mut reader, mime_type) = match device.with_selection(|offer| {
-                            // Check that we have offer
-                            let offer = match offer {
-                                Some(offer) => offer,
-                                None => return None,
-                            };
+        //                     // Check that we can work with requested mime type and pick the one
+        //                     // that suits us more
+        //                     let mime_type = match offer.with_mime_types(MimeType::find_allowed) {
+        //                         Some(mime_type) => mime_type,
+        //                         None => return None,
+        //                     };
 
-                            // Check that we can work with requested mime type and pick the one
-                            // that suits us more
-                            let mime_type = match offer.with_mime_types(MimeType::find_allowed) {
-                                Some(mime_type) => mime_type,
-                                None => return None,
-                            };
+        //                     // Request given mime type
+        //                     let reader = offer.receive(mime_type.to_string()).unwrap();
+        //                     Some((reader, mime_type))
+        //                 }) {
+        //                     Some((reader, mime_type)) => (reader, mime_type),
+        //                     None => {
+        //                         clipboard_reply_sender.send(Ok(String::new())).unwrap();
+        //                         return ();
+        //                     }
+        //                 };
 
-                            // Request given mime type
-                            let reader = offer.receive(mime_type.to_string()).unwrap();
-                            Some((reader, mime_type))
-                        }) {
-                            Some((reader, mime_type)) => (reader, mime_type),
-                            None => {
-                                clipboard_reply_sender.send(Ok(String::new())).unwrap();
-                                return ();
-                            }
-                        };
+        //                 // let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
 
-                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+        //                 let mut contents = String::new();
+        //                 let result = reader.read_to_string(&mut contents).map(|_| contents);
 
-                        let mut contents = String::new();
-                        let result = reader.read_to_string(&mut contents).map(|_| contents);
+        //                 clipboard_reply_sender.send(result).unwrap();
+        //             })
+        //             .unwrap();
+        //         }
+        //         ClipboardRequest::LoadPrimary(_) => {
+        //             env.with_primary_selection(&seat, |device| {
+        //                 let (mut reader, mime_type) = match device.with_selection(|offer| {
+        //                     // Check that we have offer
+        //                     let offer = match offer {
+        //                         Some(offer) => offer,
+        //                         None => return None,
+        //                     };
 
-                        clipboard_reply_sender.send(result).unwrap();
-                    })
-                    .unwrap();
-                }
-                ClipboardRequest::LoadPrimary(_) => {
-                    env.with_primary_selection(&seat, |device| {
-                        let (mut reader, mime_type) = match device.with_selection(|offer| {
-                            // Check that we have offer
-                            let offer = match offer {
-                                Some(offer) => offer,
-                                None => return None,
-                            };
+        //                     // Check that we can work with requested mime type and pick the one
+        //                     // that suits us more
+        //                     let mime_type = match offer.with_mime_types(MimeType::find_allowed) {
+        //                         Some(mime_type) => mime_type,
+        //                         None => return None,
+        //                     };
 
-                            // Check that we can work with requested mime type and pick the one
-                            // that suits us more
-                            let mime_type = match offer.with_mime_types(MimeType::find_allowed) {
-                                Some(mime_type) => mime_type,
-                                None => return None,
-                            };
+        //                     // Request given mime type
+        //                     let reader = offer.receive(mime_type.to_string()).unwrap();
+        //                     Some((reader, mime_type))
+        //                 }) {
+        //                     Some((reader, mime_type)) => (reader, mime_type),
+        //                     None => {
+        //                         clipboard_reply_sender.send(Ok(String::new())).unwrap();
+        //                         return ();
+        //                     }
+        //                 };
 
-                            // Request given mime type
-                            let reader = offer.receive(mime_type.to_string()).unwrap();
-                            Some((reader, mime_type))
-                        }) {
-                            Some((reader, mime_type)) => (reader, mime_type),
-                            None => {
-                                clipboard_reply_sender.send(Ok(String::new())).unwrap();
-                                return ();
-                            }
-                        };
+        //                 // let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
 
-                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+        //                 let mut contents = String::new();
+        //                 let result = reader.read_to_string(&mut contents).map(|_| contents);
 
-                        let mut contents = String::new();
-                        let result = reader.read_to_string(&mut contents).map(|_| contents);
+        //                 clipboard_reply_sender.send(result).unwrap();
+        //             })
+        //             .unwrap();
+        //         }
+        //         ClipboardRequest::Store(store_data) => {
+        //             let contents = store_data.contents.clone();
+        //             let data_source = env.new_data_source(
+        //                 vec![MimeType::TextPlainUtf8.to_string()],
+        //                 move |event, _| match event {
+        //                     DataSourceEvent::Send { mut pipe, .. } => {
+        //                         write!(pipe, "{}", contents).unwrap();
+        //                     }
+        //                     _ => (),
+        //                 },
+        //             );
 
-                        clipboard_reply_sender.send(result).unwrap();
-                    })
-                    .unwrap();
-                }
-                ClipboardRequest::Store(store_data) => {
-                    let contents = store_data.contents.clone();
-                    let data_source = env.new_data_source(
-                        vec![MimeType::TextPlainUtf8.to_string()],
-                        move |event, _| match event {
-                            DataSourceEvent::Send { mut pipe, .. } => {
-                                write!(pipe, "{}", contents).unwrap();
-                            }
-                            _ => (),
-                        },
-                    );
+        //             env.with_data_device(&seat, |device| {
+        //                 device.set_selection(&Some(data_source), serial);
 
-                    env.with_data_device(&seat, |device| {
-                        device.set_selection(&Some(data_source), serial);
+        //                 // let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+        //             });
+        //         }
+        //         ClipboardRequest::StorePrimary(store_data) => {
+        //             let contents = store_data.contents.clone();
+        //             let data_source = env.new_primary_selection_source(
+        //                 vec![MimeType::TextPlainUtf8.to_string()],
+        //                 move |event, _| match event {
+        //                     PrimarySelectionSourceEvent::Send { mut pipe, .. } => {
+        //                         write!(pipe, "{}", &contents).unwrap();
+        //                     }
+        //                     _ => (),
+        //                 },
+        //             );
 
-                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
-                    });
-                }
-                ClipboardRequest::StorePrimary(store_data) => {
-                    let contents = store_data.contents.clone();
-                    let data_source = env.new_primary_selection_source(
-                        vec![MimeType::TextPlainUtf8.to_string()],
-                        move |event, _| match event {
-                            PrimarySelectionSourceEvent::Send { mut pipe, .. } => {
-                                write!(pipe, "{}", &contents).unwrap();
-                            }
-                            _ => (),
-                        },
-                    );
+        //             env.with_primary_selection(&seat, |device| {
+        //                 device.set_selection(&Some(data_source), serial);
 
-                    env.with_primary_selection(&seat, |device| {
-                        device.set_selection(&Some(data_source), serial);
+        //                 // let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
+        //             });
+        //         }
+        //         ClipboardRequest::Exit => break,
+        //     }
+        // }
 
-                        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unreachable!());
-                    });
-                }
-                ClipboardRequest::Exit => break,
-            }
-        }
-
-        let pending_events = queue.dispatch_pending(&mut dispatch_data, |_, _, _| {});
-        std::thread::sleep(std::time::Duration::from_millis(sleep_amount));
+        event_loop.dispatch(None, &mut dispatch_data).unwrap();
+        println!("Dispatching!");
     }
 }
 

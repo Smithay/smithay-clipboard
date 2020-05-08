@@ -84,8 +84,6 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             if let Ok(event) = request_rx.recv() {
                 match event {
                     Command::Exit => {
-                        // Forget the display.
-                        std::mem::forget(display);
                         return;
                     }
                     _ => {
@@ -287,8 +285,4 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             sa_tracker.increase_sleep();
         }
     }
-
-    // Forget the display, so we won't run `drop` on it. The reason behind it, that `Display` came
-    // to us via C pointer and so, expected to be dropped by the user of the smithay-clipboard.
-    std::mem::forget(display);
 }

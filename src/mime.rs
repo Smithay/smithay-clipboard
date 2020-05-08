@@ -5,8 +5,13 @@ static ALLOWED_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "UTF8_STRING
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum MimeType {
     /// text/plain;charset=utf-8 mime type.
+    ///
+    /// The primary mime type used by most clients
     TextPlainUtf8 = 0,
     /// UTF8_STRING mime type.
+    ///
+    /// Some X11 clients are using only this mime type, so we
+    /// should have it as a fallback just in case.
     Utf8String = 1,
 }
 

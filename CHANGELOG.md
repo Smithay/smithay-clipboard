@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Minimal rust version was bumped to 1.40.0
+- Add support for `UTF8_STRING` mime type
+- Clipboard now works only with extern display
+- Clipboard now works only with last observed seats, instead of optionally accepting seat names
+
 ## 0.4.0 -- 2020-03-09
 
 - Fix crash when receiving non-utf8 data

@@ -1,18 +1,90 @@
 //! Smithay Clipboard
 //!
-//! Provides access to the wayland clipboard with only requirement being a WlDisplay
-//! object
-//!
-//! ```norun
-//! let (display, _) =
-//! Display::connect_to_env().expect("Failed to connect to the wayland server.");
-//! let mut clipboard = smithay_clipboard::WaylandClipboard::new(&display);
-//! clipboard.store(None, "Test data");
-//! println!("{}", clipboard.load(None));
-//! ```
+//! Provides access to the Wayland clipboard for gui applications. The user should have surface
+//! around.
 
-#![warn(missing_docs)]
+use std::ffi::c_void;
+use std::io::Result;
+use std::sync::mpsc::{self, Receiver, Sender};
 
-mod threaded;
-pub use crate::threaded::ThreadedClipboard;
-pub use crate::threaded::ThreadedClipboard as WaylandClipboard;
+use sctk::reexports::client::Display;
+
+mod env;
+mod mime;
+mod worker;
+
+/// Access to a Wayland clipboard.
+pub struct Clipboard {
+    request_sender: Sender<worker::Command>,
+    request_receiver: Receiver<Result<String>>,
+    clipboard_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Clipboard {
+    /// Creates new clipboard which will be running on its own thread with its own event queue to
+    /// handle clipboard requests.
+    pub fn new(display: *mut c_void) -> Self {
+        let display = unsafe { Display::from_external_display(display as *mut _) };
+
+        // Create channel to send data to clipboard thread.
+        let (request_sender, clipboard_request_receiver) = mpsc::channel();
+        // Create channel to get data from the clipboard thread.
+        let (clipboard_reply_sender, request_receiver) = mpsc::channel();
+
+        let name = String::from("smithay-clipboard");
+        let clipboard_thread = worker::spawn(
+            name,
+            display,
+            clipboard_request_receiver,
+            clipboard_reply_sender,
+        );
+
+        Self {
+            request_receiver,
+            request_sender,
+            clipboard_thread,
+        }
+    }
+
+    /// Load clipboard data.
+    ///
+    /// Loads content from a clipboard on a last observed seat.
+    pub fn load(&self) -> Result<String> {
+        let _ = self.request_sender.send(worker::Command::Load);
+        self.request_receiver.recv().unwrap()
+    }
+
+    /// Store to a clipboard
+    ///
+    /// Stores to a clipboard on a last observed seat.
+    pub fn store<T: Into<String>>(&self, text: T) {
+        let request = worker::Command::Store(text.into());
+        let _ = self.request_sender.send(request);
+    }
+
+    /// Load primary clipboard data.
+    ///
+    /// Loads content from a  primary clipboard on a last observed seat.
+    pub fn load_primary(&self) -> Result<String> {
+        let _ = self.request_sender.send(worker::Command::LoadPrimary);
+        self.request_receiver.recv().unwrap()
+    }
+
+    /// Store to a primary clipboard.
+    ///
+    /// Stores to a primary clipboard on a last observed seat.
+    pub fn store_primary<T: Into<String>>(&self, text: T) {
+        let request = worker::Command::StorePrimary(text.into());
+        let _ = self.request_sender.send(request);
+    }
+}
+
+impl Drop for Clipboard {
+    fn drop(&mut self) {
+        // Shutdown smithay-clipboard.
+        self.request_sender.send(worker::Command::Exit).unwrap();
+        if let Some(clipboard_thread) = self.clipboard_thread.take() {
+            let _ = clipboard_thread.join();
+        }
+    }
+}

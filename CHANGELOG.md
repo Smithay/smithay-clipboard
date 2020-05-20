@@ -4,7 +4,7 @@
 
 # 0.5.0 -- 2020-05-20
 
-- Minimal rust version was bumped to 1.40.0
+- Minimal rust version was bumped to 1.41.0
 - Add support for `UTF8_STRING` mime type
 - **Breaking** Clipboard now works only with extern display
 - **Breaking** Clipboard now works only with last observed seats, instead of optionally accepting seat names

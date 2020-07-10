@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed clipboard not working, when seat had empty name
+
 # 0.5.0 -- 2020-05-20
 
 - Minimal rust version was bumped to 1.41.0

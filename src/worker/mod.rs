@@ -144,7 +144,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
 
     // Listen for seats.
     let _listener = env.listen_for_seats(move |seat, seat_data, _| {
-        let detached_seat = seat.clone().detach();
+        let detached_seat = seat.detach();
         let pos = seats.iter().position(|st| st.seat == detached_seat);
         let index = pos.unwrap_or_else(|| {
             seats.push(SeatData::new(detached_seat, None, None));

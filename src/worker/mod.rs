@@ -216,7 +216,14 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
                 .unwrap();
 
             // Get latest observed seat and serial.
-            let (seat, serial) = dispatch_data.last_seat().unwrap();
+            let (seat, serial) = match dispatch_data.last_seat() {
+                Some(data) => data,
+                None => {
+                    handlers::reply_error(&reply_tx, "no focus on a seat.");
+                    continue;
+                }
+            };
+
             let serial = *serial;
 
             // Handle requests.
@@ -225,7 +232,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
                     if data_device_manager.is_some() {
                         handle_load!(env, with_data_device, seat, queue, reply_tx);
                     } else {
-                        handlers::reply_error(&reply_tx, "Clipboard is not available");
+                        handlers::reply_error(&reply_tx, "clipboard is not available.");
                     }
                 }
                 Command::Store(contents) => {
@@ -246,7 +253,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
                     if primary_selection_manager.is_some() {
                         handle_load!(env, with_primary_selection, seat, queue, reply_tx);
                     } else {
-                        handlers::reply_error(&reply_tx, "Primary clipboard is not available");
+                        handlers::reply_error(&reply_tx, "primary clipboard is not available.");
                     }
                 }
                 Command::StorePrimary(contents) => {

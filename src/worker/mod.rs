@@ -68,9 +68,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
 
     let env = Environment::init(&display_proxy, SmithayClipboard::new());
     let req = queue.sync_roundtrip(&mut (), |_, _, _| unreachable!());
-    let _ = req
-        .and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()))
-        .unwrap();
+    let _ = req.and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!())).unwrap();
 
     // Get data device manager.
     let data_device_manager = env.get_global::<WlDataDeviceManager>();
@@ -211,9 +209,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             // Reset the time we're sleeping.
             sa_tracker.reset_sleep();
 
-            queue
-                .sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!())
-                .unwrap();
+            queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!()).unwrap();
 
             // Get latest observed seat and serial.
             let (seat, serial) = match dispatch_data.last_seat() {
@@ -274,9 +270,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             }
         }
 
-        let pending_events = queue
-            .dispatch_pending(&mut dispatch_data, |_, _, _| {})
-            .unwrap();
+        let pending_events = queue.dispatch_pending(&mut dispatch_data, |_, _, _| {}).unwrap();
 
         // If some application is trying to spam us when there're no seats, it's likely that
         // someone is trying to paste from us.

@@ -39,9 +39,7 @@ macro_rules! handle_load {
                 }
             };
 
-            $queue
-                .sync_roundtrip(&mut (), |_, _, _| unreachable!())
-                .unwrap();
+            $queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()).unwrap();
 
             let mut contents = String::new();
             let result = reader.read_to_string(&mut contents).map(|_| {
@@ -67,14 +65,12 @@ macro_rules! handle_store {
     ($env:ident,
      $sel_source:ident, $sel_device:ident, $event_ty:ident,
      $seat:ident, $serial:ident, $queue:ident, $contents:ident) => {
-        let data_source = $env.$sel_source(
-            vec![MimeType::TextPlainUtf8.to_string()],
-            move |event, _| {
+        let data_source =
+            $env.$sel_source(vec![MimeType::TextPlainUtf8.to_string()], move |event, _| {
                 if let $event_ty::Send { mut pipe, .. } = event {
                     write!(pipe, "{}", $contents).unwrap();
                 }
-            },
-        );
+            });
 
         let _ = $env.$sel_device(&$seat, |device| {
             device.set_selection(&Some(data_source), $serial);
@@ -86,11 +82,7 @@ macro_rules! handle_store {
 
 /// Reply an error to a clipboard master.
 pub fn reply_error(tx: &Sender<Result<String>>, description: &str) {
-    tx.send(Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        description,
-    )))
-    .unwrap();
+    tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, description))).unwrap();
 }
 
 /// Update seat and serial on pointer events.

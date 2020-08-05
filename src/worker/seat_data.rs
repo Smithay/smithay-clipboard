@@ -11,10 +11,6 @@ pub struct SeatData {
 
 impl SeatData {
     pub fn new(seat: WlSeat, keyboard: Option<WlKeyboard>, pointer: Option<WlPointer>) -> Self {
-        SeatData {
-            seat,
-            keyboard,
-            pointer,
-        }
+        SeatData { seat, keyboard, pointer }
     }
 }

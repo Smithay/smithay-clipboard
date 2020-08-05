@@ -32,18 +32,10 @@ impl Clipboard {
         let (clipboard_reply_sender, request_receiver) = mpsc::channel();
 
         let name = String::from("smithay-clipboard");
-        let clipboard_thread = worker::spawn(
-            name,
-            display,
-            clipboard_request_receiver,
-            clipboard_reply_sender,
-        );
+        let clipboard_thread =
+            worker::spawn(name, display, clipboard_request_receiver, clipboard_reply_sender);
 
-        Self {
-            request_receiver,
-            request_sender,
-            clipboard_thread,
-        }
+        Self { request_receiver, request_sender, clipboard_thread }
     }
 
     /// Load clipboard data.

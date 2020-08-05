@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed clipboard crashing, when seat has neither keyboard nor pointer focus
+
 ## 0.5.1 -- 2020-07-10
 
 - Fixed clipboard not working, when seat had empty name

@@ -20,11 +20,7 @@ impl SmithayClipboard {
         let mut seats = SeatHandler::new();
         let data_device_manager = DataDeviceHandler::init(&mut seats);
         let primary_selection_manager = PrimarySelectionHandler::init(&mut seats);
-        Self {
-            seats,
-            primary_selection_manager,
-            data_device_manager,
-        }
+        Self { seats, primary_selection_manager, data_device_manager }
     }
 }
 
@@ -44,13 +40,11 @@ impl PrimarySelectionHandling for SmithayClipboard {
         seat: &WlSeat,
         f: F,
     ) -> Result<(), ()> {
-        self.primary_selection_manager
-            .with_primary_selection(seat, f)
+        self.primary_selection_manager.with_primary_selection(seat, f)
     }
 
     fn get_primary_selection_manager(&self) -> Option<PrimarySelectionDeviceManager> {
-        self.primary_selection_manager
-            .get_primary_selection_manager()
+        self.primary_selection_manager.get_primary_selection_manager()
     }
 }
 

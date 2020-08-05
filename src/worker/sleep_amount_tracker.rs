@@ -16,12 +16,7 @@ impl SleepAmountTracker {
     /// `max_time_to_sleep` - maximum sleep value for a thread.
     /// ``
     pub fn new(max_time_to_sleep: u8, max_warm_wakeups: u8) -> Self {
-        Self {
-            max_time_to_sleep,
-            max_warm_wakeups,
-            warm_wakeup: 0,
-            time_to_sleep: 0,
-        }
+        Self { max_time_to_sleep, max_warm_wakeups, warm_wakeup: 0, time_to_sleep: 0 }
     }
 
     /// Reset the current sleep amount to 0ms.

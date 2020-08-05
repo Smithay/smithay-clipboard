@@ -25,10 +25,7 @@ struct DispatchData {
 
 impl DispatchData {
     fn new(clipboard: Clipboard) -> Self {
-        Self {
-            pending_frame_event: None,
-            clipboard,
-        }
+        Self { pending_frame_event: None, clipboard }
     }
 }
 
@@ -68,15 +65,11 @@ fn main() {
         .expect("failed to create a window.");
 
     // Set title and app id
-    window.set_title(String::from(
-        "smithay-clipboard example. Press C/P to copy/paste",
-    ));
+    window.set_title(String::from("smithay-clipboard example. Press C/P to copy/paste"));
     window.set_app_id(String::from("smithay-clipboard-example"));
 
     // Create memory pool
-    let mut pools = env
-        .create_double_pool(|_| {})
-        .expect("failed to create a memory pool.");
+    let mut pools = env.create_double_pool(|_| {}).expect("failed to create a memory pool.");
 
     // Structure to track seats
     let mut seats = Vec::<(WlSeat, Option<(WlKeyboard, EventLoopSource<_>)>)>::new();
@@ -110,10 +103,7 @@ fn main() {
                     seats.push((seat.detach(), Some((keyboard, repeat_source))));
                 }
                 Err(err) => {
-                    eprintln!(
-                        "Failed to map keyboard on seat {:?} : {:?}",
-                        seat_data.name, err
-                    );
+                    eprintln!("Failed to map keyboard on seat {:?} : {:?}", seat_data.name, err);
                     seats.push((seat.detach(), None));
                 }
             }
@@ -155,10 +145,7 @@ fn main() {
                         *mapped_keyboard = Some((keyboard, repeat_source));
                     }
                     Err(err) => {
-                        eprintln!(
-                            "Failed to map keyboard on seat {} : {:?}",
-                            seat_data.name, err
-                        );
+                        eprintln!("Failed to map keyboard on seat {} : {:?}", seat_data.name, err);
                     }
                 }
             }
@@ -178,9 +165,7 @@ fn main() {
         window.refresh();
     }
 
-    sctk::WaylandSource::new(queue)
-        .quick_insert(event_loop.handle())
-        .unwrap();
+    sctk::WaylandSource::new(queue).quick_insert(event_loop.handle()).unwrap();
 
     let clipboard = Clipboard::new(display.get_display_ptr() as *mut _);
     let mut dispatch_data = DispatchData::new(clipboard);
@@ -214,14 +199,8 @@ fn main() {
 
 fn process_keyboard_event(event: KeyboardEvent, dispatch_data: &mut DispatchData) {
     let text = match event {
-        KeyboardEvent::Key {
-            state,
-            utf8: Some(text),
-            ..
-        } if state == KeyState::Pressed => text,
-        KeyboardEvent::Repeat {
-            utf8: Some(text), ..
-        } => text,
+        KeyboardEvent::Key { state, utf8: Some(text), .. } if state == KeyState::Pressed => text,
+        KeyboardEvent::Repeat { utf8: Some(text), .. } => text,
         _ => return,
     };
 
@@ -263,8 +242,7 @@ fn draw(
     surface: WlSurface,
     dimensions: (u32, u32),
 ) -> Result<(), std::io::Error> {
-    pool.resize((4 * dimensions.0 * dimensions.1) as usize)
-        .expect("failed to resize memory pool");
+    pool.resize((4 * dimensions.0 * dimensions.1) as usize).expect("failed to resize memory pool");
 
     {
         pool.seek(SeekFrom::Start(0))?;

@@ -65,12 +65,14 @@ macro_rules! handle_store {
     ($env:ident,
      $sel_source:ident, $sel_device:ident, $event_ty:ident,
      $seat:ident, $serial:ident, $queue:ident, $contents:ident) => {
-        let data_source =
-            $env.$sel_source(vec![MimeType::TextPlainUtf8.to_string()], move |event, _| {
+        let data_source = $env.$sel_source(
+            vec![MimeType::TextPlainUtf8.to_string(), MimeType::Utf8String.to_string()],
+            move |event, _| {
                 if let $event_ty::Send { mut pipe, .. } = event {
                     write!(pipe, "{}", $contents).unwrap();
                 }
-            });
+            },
+        );
 
         let _ = $env.$sel_device(&$seat, |device| {
             device.set_selection(&Some(data_source), $serial);

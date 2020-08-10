@@ -39,7 +39,12 @@ macro_rules! handle_load {
                 }
             };
 
-            $queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()).unwrap();
+            // If we fail here, it means that we likely won't be able
+            // to read clipboard anyway, so return and reply to prevent block/crash.
+            if $queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()).is_err() {
+                handlers::reply_error(&$tx, "failed to access clipboard.");
+                return;
+            };
 
             let mut contents = String::new();
             let result = reader.read_to_string(&mut contents).map(|_| {
@@ -50,7 +55,7 @@ macro_rules! handle_load {
                 }
             });
 
-            $tx.send(result).unwrap();
+            let _ = $tx.send(result);
         });
 
         // Send back that we've failed to load data from the clipboard.
@@ -84,7 +89,7 @@ macro_rules! handle_store {
 
 /// Reply an error to a clipboard master.
 pub fn reply_error(tx: &Sender<Result<String>>, description: &str) {
-    tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, description))).unwrap();
+    let _ = tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, description)));
 }
 
 /// Update seat and serial on pointer events.

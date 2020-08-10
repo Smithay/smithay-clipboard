@@ -68,7 +68,12 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
 
     let env = Environment::init(&display_proxy, SmithayClipboard::new());
     let req = queue.sync_roundtrip(&mut (), |_, _, _| unreachable!());
-    let _ = req.and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!())).unwrap();
+    let req = req.and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()));
+
+    // We shouldn't crash the application if we've failed to dispatch.
+    if req.is_err() {
+        return;
+    }
 
     // Get data device manager.
     let data_device_manager = env.get_global::<WlDataDeviceManager>();
@@ -209,7 +214,12 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             // Reset the time we're sleeping.
             sa_tracker.reset_sleep();
 
-            queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!()).unwrap();
+            if queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!()).is_err() {
+                if request == Command::LoadPrimary || request == Command::Load {
+                    handlers::reply_error(&reply_tx, "primary clipboard is not available.");
+                    break;
+                }
+            }
 
             // Get latest observed seat and serial.
             let (seat, serial) = match dispatch_data.last_seat() {
@@ -270,7 +280,10 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             }
         }
 
-        let pending_events = queue.dispatch_pending(&mut dispatch_data, |_, _, _| {}).unwrap();
+        let pending_events = match queue.dispatch_pending(&mut dispatch_data, |_, _, _| {}) {
+            Ok(pending_events) => pending_events,
+            Err(_) => break,
+        };
 
         // If some application is trying to spam us when there're no seats, it's likely that
         // someone is trying to paste from us.

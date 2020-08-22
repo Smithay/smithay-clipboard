@@ -1,6 +1,8 @@
 #![macro_use]
 
+use std::fs::File;
 use std::io::Result;
+use std::os::unix::io::FromRawFd;
 use std::sync::mpsc::Sender;
 
 use sctk::reexports::client::protocol::wl_keyboard::Event as KeyboardEvent;
@@ -119,6 +121,10 @@ pub fn keyboard_handler(seat: WlSeat, event: KeyboardEvent, mut dispatch_data: D
         }
         KeyboardEvent::Leave { .. } => {
             dispatch_data.remove_seat(seat);
+        }
+        KeyboardEvent::Keymap { fd, .. } => {
+            // Prevent fd leaking.
+            let _ = unsafe { File::from_raw_fd(fd) };
         }
         _ => {}
     }

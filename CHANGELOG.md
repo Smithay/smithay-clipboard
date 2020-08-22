@@ -4,6 +4,7 @@
 
 - Fixed clipboard crashing, when seat has neither keyboard nor pointer focus
 - Advertise UTF8_STRING mimetype
+- Fixed fd leaking from keymap updates
 
 ## 0.5.1 -- 2020-07-10
 

@@ -43,10 +43,17 @@ impl Clipboard {
     /// Loads content from a clipboard on a last observed seat.
     pub fn load(&self) -> Result<String> {
         let _ = self.request_sender.send(worker::Command::Load);
-        self.request_receiver.recv().unwrap()
+
+        if let Ok(reply) = self.request_receiver.recv() {
+            reply
+        } else {
+            // The clipboard thread is dead, however we shouldn't crash downstream, so
+            // propogating an error.
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
+        }
     }
 
-    /// Store to a clipboard
+    /// Store to a clipboard.
     ///
     /// Stores to a clipboard on a last observed seat.
     pub fn store<T: Into<String>>(&self, text: T) {
@@ -59,7 +66,14 @@ impl Clipboard {
     /// Loads content from a  primary clipboard on a last observed seat.
     pub fn load_primary(&self) -> Result<String> {
         let _ = self.request_sender.send(worker::Command::LoadPrimary);
-        self.request_receiver.recv().unwrap()
+
+        if let Ok(reply) = self.request_receiver.recv() {
+            reply
+        } else {
+            // The clipboard thread is dead, however we shouldn't crash downstream, so
+            // propogating an error.
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
+        }
     }
 
     /// Store to a primary clipboard.
@@ -74,7 +88,7 @@ impl Clipboard {
 impl Drop for Clipboard {
     fn drop(&mut self) {
         // Shutdown smithay-clipboard.
-        self.request_sender.send(worker::Command::Exit).unwrap();
+        let _ = self.request_sender.send(worker::Command::Exit);
         if let Some(clipboard_thread) = self.clipboard_thread.take() {
             let _ = clipboard_thread.join();
         }

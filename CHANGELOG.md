@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.2 -- 2020-08-30
+
 - Fixed clipboard crashing, when seat has neither keyboard nor pointer focus
 - Advertise UTF8_STRING mimetype
 - Fixed crash when writing data to the server fails

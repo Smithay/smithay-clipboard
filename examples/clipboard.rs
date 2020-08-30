@@ -41,27 +41,32 @@ fn main() {
     let mut dimentions = (320u32, 240u32);
 
     // Create surface
-    let surface = env.create_surface();
+    let surface = env.create_surface().detach();
 
     // Create window
     let mut window = env
-        .create_window::<ConceptFrame, _>(surface, dimentions, move |event, mut dispatch_data| {
-            // Get our dispath data
-            let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
+        .create_window::<ConceptFrame, _>(
+            surface,
+            None,
+            dimentions,
+            move |event, mut dispatch_data| {
+                // Get our dispath data
+                let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
 
-            // Keep last event in priority order : Close > Configure > Refresh
-            let should_replace_event = match (&event, &dispatch_data.pending_frame_event) {
-                (_, &None)
-                | (_, &Some(WindowEvent::Refresh))
-                | (&WindowEvent::Configure { .. }, &Some(WindowEvent::Configure { .. }))
-                | (&WindowEvent::Close, _) => true,
-                _ => false,
-            };
+                // Keep last event in priority order : Close > Configure > Refresh
+                let should_replace_event = match (&event, &dispatch_data.pending_frame_event) {
+                    (_, &None)
+                    | (_, &Some(WindowEvent::Refresh))
+                    | (&WindowEvent::Configure { .. }, &Some(WindowEvent::Configure { .. }))
+                    | (&WindowEvent::Close, _) => true,
+                    _ => false,
+                };
 
-            if should_replace_event {
-                dispatch_data.pending_frame_event = Some(event);
-            }
-        })
+                if should_replace_event {
+                    dispatch_data.pending_frame_event = Some(event);
+                }
+            },
+        )
         .expect("failed to create a window.");
 
     // Set title and app id

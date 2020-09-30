@@ -211,11 +211,11 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             // Reset the time we're sleeping.
             sa_tracker.reset_sleep();
 
-            if queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!()).is_err() {
-                if request == Command::LoadPrimary || request == Command::Load {
-                    handlers::reply_error(&reply_tx, "primary clipboard is not available.");
-                    break;
-                }
+            if queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!()).is_err()
+                && (request == Command::LoadPrimary || request == Command::Load)
+            {
+                handlers::reply_error(&reply_tx, "primary clipboard is not available.");
+                break;
             }
 
             // Get latest observed seat and serial.

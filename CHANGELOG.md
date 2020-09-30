@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Updated smithay-client-toolkit to 0.12
+
 ## 0.5.2 -- 2020-08-30
 
 - Fixed clipboard crashing, when seat has neither keyboard nor pointer focus

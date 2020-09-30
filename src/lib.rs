@@ -3,6 +3,7 @@
 //! Provides access to the Wayland clipboard for gui applications. The user should have surface
 //! around.
 
+#![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use, clippy::wrong_pub_self_convention)]
 use std::ffi::c_void;
 use std::io::Result;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -23,8 +24,13 @@ pub struct Clipboard {
 impl Clipboard {
     /// Creates new clipboard which will be running on its own thread with its own event queue to
     /// handle clipboard requests.
-    pub fn new(display: *mut c_void) -> Self {
-        let display = unsafe { Display::from_external_display(display as *mut _) };
+    ///
+    /// # Safety
+    ///
+    /// `display` must be a valid `*mut wl_display` pointer, and it must remain
+    /// valid for as long as `Clipboard` object is alive.
+    pub unsafe fn new(display: *mut c_void) -> Self {
+        let display = Display::from_external_display(display as *mut _);
 
         // Create channel to send data to clipboard thread.
         let (request_sender, clipboard_request_receiver) = mpsc::channel();

@@ -31,7 +31,7 @@ impl DispatchData {
 
 fn main() {
     // Setup default desktop environment
-    let (env, display, queue) = sctk::init_default_environment!(ClipboardExample, desktop)
+    let (env, display, queue) = sctk::new_default_environment!(ClipboardExample, desktop)
         .expect("unable to connect to a Wayland compositor.");
 
     // Create event loop

@@ -66,14 +66,11 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
     let mut queue = display.create_event_queue();
     let display_proxy = display.attach(queue.token());
 
-    let env = Environment::init(&display_proxy, SmithayClipboard::new());
-    let req = queue.sync_roundtrip(&mut (), |_, _, _| unreachable!());
-    let req = req.and_then(|_| queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()));
-
-    // We shouldn't crash the application if we've failed to dispatch.
-    if req.is_err() {
-        return;
-    }
+    let env = match Environment::new(&display_proxy, &mut queue, SmithayClipboard::new()) {
+        Ok(env) => env,
+        // We shouldn't crash the application if we've failed to create environment.
+        Err(_) => return,
+    };
 
     // Get data device manager.
     let data_device_manager = env.get_global::<WlDataDeviceManager>();

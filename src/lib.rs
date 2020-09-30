@@ -23,6 +23,11 @@ pub struct Clipboard {
 impl Clipboard {
     /// Creates new clipboard which will be running on its own thread with its own event queue to
     /// handle clipboard requests.
+    ///
+    /// # Safety
+    ///
+    /// `display` must be a valid `*mut wl_display` pointer, and it must remain
+    /// valid for as long as `Clipboard` object is alive.
     pub unsafe fn new(display: *mut c_void) -> Self {
         let display = unsafe { Display::from_external_display(display as *mut _) };
 

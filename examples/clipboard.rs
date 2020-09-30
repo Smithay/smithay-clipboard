@@ -172,7 +172,7 @@ fn main() {
 
     sctk::WaylandSource::new(queue).quick_insert(event_loop.handle()).unwrap();
 
-    let clipboard = Clipboard::new(display.get_display_ptr() as *mut _);
+    let clipboard = unsafe { Clipboard::new(display.get_display_ptr() as *mut _) };
     let mut dispatch_data = DispatchData::new(clipboard);
 
     loop {

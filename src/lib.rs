@@ -23,7 +23,7 @@ pub struct Clipboard {
 impl Clipboard {
     /// Creates new clipboard which will be running on its own thread with its own event queue to
     /// handle clipboard requests.
-    pub fn new(display: *mut c_void) -> Self {
+    pub unsafe fn new(display: *mut c_void) -> Self {
         let display = unsafe { Display::from_external_display(display as *mut _) };
 
         // Create channel to send data to clipboard thread.

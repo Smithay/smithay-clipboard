@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 -- 2020-10-01
+
 - Updated smithay-client-toolkit to 0.12
 - **Breaking** `Clipboard::new` is now marked with `unsafe`
 

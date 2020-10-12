@@ -76,7 +76,7 @@ macro_rules! handle_store {
             vec![MimeType::TextPlainUtf8.to_string(), MimeType::Utf8String.to_string()],
             move |event, _| {
                 if let $event_ty::Send { mut pipe, .. } = event {
-                    write!(pipe, "{}", $contents).unwrap();
+                    let _ = write!(pipe, "{}", $contents);
                 }
             },
         );

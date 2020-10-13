@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.1 -- 2020-10-13
+
 - Crash when failing to write to a clipboard
 
 ## 0.6.0 -- 2020-10-03

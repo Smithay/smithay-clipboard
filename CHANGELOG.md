@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Crash when failing to write to a clipboard
+
 ## 0.6.0 -- 2020-10-03
 
 - Updated smithay-client-toolkit to 0.12

@@ -76,6 +76,8 @@ macro_rules! handle_store {
             vec![MimeType::TextPlainUtf8.to_string(), MimeType::Utf8String.to_string()],
             move |event, _| {
                 if let $event_ty::Send { mut pipe, .. } = event {
+                    // If we fail to write here, it means that other side closed the pipe, thus
+                    // we can't do anything about it.
                     let _ = write!(pipe, "{}", $contents);
                 }
             },

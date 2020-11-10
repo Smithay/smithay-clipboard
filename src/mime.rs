@@ -39,11 +39,11 @@ impl ToString for MimeType {
     }
 }
 
-/// Normalize \r and \r\n into \n.
+/// Normalize CR and CRLF into LF.
 ///
-/// Gtk does this for text/plain;charset=utf-8, so following them here, otherwise there is
-/// a chance of getting extra new lines on load, since they're converting \r and \n into
-/// \r\n on every store.
+/// 'text' mime types require CRLF line ending according to
+/// RFC-2046, however the platform line terminator and what applications
+/// expect is LF.
 pub fn normilize_to_lf(text: String) -> String {
     text.replace("\r\n", "\n").replace("\r", "\n")
 }

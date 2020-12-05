@@ -143,15 +143,13 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
     }
 
     // Listen for seats.
-    let _listener = env.listen_for_seats(move |seat, seat_data, _| {
-        let detached_seat = seat.detach();
-        let pos = seats.iter().position(|st| st.seat == detached_seat);
-        let index = pos.unwrap_or_else(|| {
-            seats.push(SeatData::new(detached_seat, None, None));
-            seats.len() - 1
-        });
+    let listener = env.listen_for_seats(move |seat, seat_data, mut dispatch_data| {
+        let dispatch_data = match dispatch_data.get::<ClipboardDispatchData>() {
+            Some(dispatch_data) => dispatch_data,
+            None => return,
+        };
 
-        let seat_resources = &mut seats[index];
+        let seat_resources = dispatch_data.get_seat_data_or_add(seat.detach());
 
         if seat_data.has_keyboard && !seat_data.defunct {
             if seat_resources.keyboard.is_none() {
@@ -194,7 +192,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
     // Flush the display.
     let _ = queue.display().flush();
 
-    let mut dispatch_data = ClipboardDispatchData::new();
+    let mut dispatch_data = ClipboardDispatchData::new(seats);
 
     // Setup sleep amount tracker.
     let mut sa_tracker = SleepAmountTracker::new(MAX_TIME_TO_SLEEP, MAX_WARM_WAKEUPS);
@@ -219,7 +217,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
             }
 
             // Get latest observed seat and serial.
-            let (seat, serial) = match dispatch_data.last_seat() {
+            let (seat, serial) = match dispatch_data.last_observed_seat() {
                 Some(data) => data,
                 None => {
                     handlers::reply_error(&reply_tx, "no focus on a seat.");
@@ -284,7 +282,7 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
 
         // If some application is trying to spam us when there're no seats, it's likely that
         // someone is trying to paste from us.
-        if dispatch_data.last_seat().is_none() && pending_events != 0 {
+        if dispatch_data.last_observed_seat().is_none() && pending_events != 0 {
             sa_tracker.reset_sleep();
         } else {
             // Time for thread to sleep.
@@ -295,5 +293,30 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
 
             sa_tracker.increase_sleep();
         }
+    }
+
+    // While everything inside this block is safe, the logic is generally unsafe, since we must
+    // drop every proxy on the current `queue`, since dropping it in multithreaded context
+    // could result in use-after-free in libwayland-client.
+    //
+    // For more see https://gitlab.freedesktop.org/wayland/wayland/-/issues/13.
+    #[allow(unused_unsafe)]
+    unsafe {
+        for seat in dispatch_data.seats() {
+            if let Some(pointer) = seat.pointer.take() {
+                if pointer.as_ref().version() >= 3 {
+                    pointer.release();
+                }
+            }
+            if let Some(keyboard) = seat.keyboard.take() {
+                if keyboard.as_ref().version() >= 3 {
+                    keyboard.release();
+                }
+            }
+        }
+        std::mem::drop(listener);
+
+        let _ = queue.sync_roundtrip(&mut dispatch_data, |_, _, _| unimplemented!());
+        let _ = queue.display().flush();
     }
 }

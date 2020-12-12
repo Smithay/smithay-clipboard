@@ -104,10 +104,10 @@ pub fn pointer_handler(seat: WlSeat, event: PointerEvent, mut dispatch_data: Dis
     };
     match event {
         PointerEvent::Enter { serial, .. } => {
-            dispatch_data.set_last_seat(seat, serial);
+            dispatch_data.set_last_observed_seat(seat, serial);
         }
         PointerEvent::Button { serial, .. } => {
-            dispatch_data.set_last_seat(seat, serial);
+            dispatch_data.set_last_observed_seat(seat, serial);
         }
         _ => {}
     }
@@ -121,13 +121,13 @@ pub fn keyboard_handler(seat: WlSeat, event: KeyboardEvent, mut dispatch_data: D
     };
     match event {
         KeyboardEvent::Enter { serial, .. } => {
-            dispatch_data.set_last_seat(seat, serial);
+            dispatch_data.set_last_observed_seat(seat, serial);
         }
         KeyboardEvent::Key { serial, .. } => {
-            dispatch_data.set_last_seat(seat, serial);
+            dispatch_data.set_last_observed_seat(seat, serial);
         }
         KeyboardEvent::Leave { .. } => {
-            dispatch_data.remove_seat(seat);
+            dispatch_data.remove_observed_seat(seat);
         }
         KeyboardEvent::Keymap { fd, .. } => {
             // Prevent fd leaking.

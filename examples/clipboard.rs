@@ -223,7 +223,7 @@ fn process_keyboard_event(event: KeyboardEvent, dispatch_data: &mut DispatchData
             let contents = dispatch_data
                 .clipboard
                 .load()
-                .unwrap_or_else(|_| String::from("Failed to load primary selection"));
+                .unwrap_or_else(|_| String::from("Failed to load selection"));
             println!("Paste: {}", contents);
         }
         // Copy primary.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.2 -- 2020-12-17
+
 - Segfault when dropping clipboard in multithreaded context while main queue is still running
 
 ## 0.6.1 -- 2020-10-13

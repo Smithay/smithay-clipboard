@@ -37,28 +37,18 @@ impl ClipboardDispatchData {
 
     /// Set the last observed seat.
     pub fn set_last_observed_seat(&mut self, seat: WlSeat, serial: u32) {
-        let pos = self.observed_seats.iter().position(|st| st.0 == seat);
-        let (seat, serial) = match pos {
-            Some(pos) => {
-                // We just found that `pos` we're going to remove, so unwrapping is safe.
-                self.observed_seats.remove(pos).unwrap()
-            }
-            None => (seat, serial),
-        };
+        // Assure each seat exists only once.
+        self.remove_observed_seat(&seat);
 
-        // Add seat to front, thus it'll be the latest observed one.
+        // Add the seat to front, making it the latest observed one.
         self.observed_seats.push_front((seat, serial));
     }
 
     /// Remove the given seat from the observed seats.
-    pub fn remove_observed_seat(&mut self, seat: WlSeat) {
-        let pos = match self.observed_seats.iter().position(|st| st.0 == seat) {
-            Some(pos) => pos,
-            None => return,
-        };
-
-        // Remove the seat data.
-        self.observed_seats.remove(pos);
+    pub fn remove_observed_seat(&mut self, seat: &WlSeat) {
+        if let Some(pos) = self.observed_seats.iter().position(|st| &st.0 == seat) {
+            self.observed_seats.remove(pos);
+        }
     }
 
     /// Return the last observed seat and the serial.

@@ -224,7 +224,6 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
                     continue;
                 }
             };
-
             let serial = *serial;
 
             // Handle requests.

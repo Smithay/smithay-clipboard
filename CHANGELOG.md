@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Consecutive clipboard stores dropped until the application is refocused
+
 ## 0.6.2 -- 2020-12-17
 
 - Segfault when dropping clipboard in multithreaded context while main queue is still running

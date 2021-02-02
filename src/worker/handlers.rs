@@ -127,7 +127,7 @@ pub fn keyboard_handler(seat: WlSeat, event: KeyboardEvent, mut dispatch_data: D
             dispatch_data.set_last_observed_seat(seat, serial);
         }
         KeyboardEvent::Leave { .. } => {
-            dispatch_data.remove_observed_seat(seat);
+            dispatch_data.remove_observed_seat(&seat);
         }
         KeyboardEvent::Keymap { fd, .. } => {
             // Prevent fd leaking.

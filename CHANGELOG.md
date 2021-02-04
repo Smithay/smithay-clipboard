@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.3 -- 2021-02-04
+
 - Consecutive clipboard stores dropped until the application is refocused
 
 ## 0.6.2 -- 2020-12-17

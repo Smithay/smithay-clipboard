@@ -44,6 +44,6 @@ impl ToString for MimeType {
 /// 'text' mime types require CRLF line ending according to
 /// RFC-2046, however the platform line terminator and what applications
 /// expect is LF.
-pub fn normilize_to_lf(text: String) -> String {
+pub fn normalize_to_lf(text: String) -> String {
     text.replace("\r\n", "\n").replace("\r", "\n")
 }

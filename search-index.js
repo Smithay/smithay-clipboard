@@ -1,0 +1,4 @@
+var searchIndex = JSON.parse('{\
+"smithay_clipboard":{"doc":"Smithay Clipboard","i":[[3,"Clipboard","smithay_clipboard","Access to a Wayland clipboard.",null,null],[11,"new","","Creates new clipboard which will be running on its own …",0,[[]]],[11,"load","","Load clipboard data.",0,[[],[["string",3],["result",6]]]],[11,"store","","Store to a clipboard.",0,[[["string",3],["into",8]]]],[11,"load_primary","","Load primary clipboard data.",0,[[],[["string",3],["result",6]]]],[11,"store_primary","","Store to a primary clipboard.",0,[[["string",3],["into",8]]]],[11,"from","","",0,[[]]],[11,"into","","",0,[[]]],[11,"borrow","","",0,[[]]],[11,"borrow_mut","","",0,[[]]],[11,"try_from","","",0,[[],["result",4]]],[11,"try_into","","",0,[[],["result",4]]],[11,"type_id","","",0,[[],["typeid",3]]],[11,"drop","","",0,[[]]]],"p":[[3,"Clipboard"]]}\
+}');
+addSearchOptions(searchIndex);initSearch(searchIndex);

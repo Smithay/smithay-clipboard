@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["Clipboard","Access to a Wayland clipboard."]]});

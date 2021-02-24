@@ -51,7 +51,7 @@ macro_rules! handle_load {
             let mut contents = String::new();
             let result = reader.read_to_string(&mut contents).map(|_| {
                 if mime_type == MimeType::Utf8String {
-                    mime::normilize_to_lf(contents)
+                    mime::normalize_to_lf(contents)
                 } else {
                     contents
                 }

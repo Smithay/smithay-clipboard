@@ -10,8 +10,8 @@ license = "MIT"
 keywords = ["clipboard", "wayland"]
 
 [dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.12", default-features = false }
+sctk = { package = "smithay-client-toolkit", version = "0.14", default-features = false }
 wayland-client = { version = "0.28", features = ["dlopen"] }
 
 [dev-dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.12"}
+sctk = { package = "smithay-client-toolkit", version = "0.14"}

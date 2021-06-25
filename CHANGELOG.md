@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.4 -- 2021-06-25
+
+- Update SCTK to 0.14, significantly reducing the depdendency tree
+
 ## 0.6.3 -- 2021-02-04
 
 - Consecutive clipboard stores dropped until the application is refocused

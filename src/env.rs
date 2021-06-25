@@ -1,3 +1,4 @@
+use sctk::MissingGlobal;
 use sctk::data_device::{DataDevice, DataDeviceHandler, DataDeviceHandling, DndEvent};
 use sctk::primary_selection::{
     PrimarySelectionDevice, PrimarySelectionDeviceManager, PrimarySelectionHandler,
@@ -39,7 +40,7 @@ impl PrimarySelectionHandling for SmithayClipboard {
         &self,
         seat: &WlSeat,
         f: F,
-    ) -> Result<(), ()> {
+    ) -> Result<(), MissingGlobal> {
         self.primary_selection_manager.with_primary_selection(seat, f)
     }
 
@@ -49,14 +50,14 @@ impl PrimarySelectionHandling for SmithayClipboard {
 }
 
 impl DataDeviceHandling for SmithayClipboard {
-    fn set_callback<F>(&mut self, callback: F) -> Result<(), ()>
+    fn set_callback<F>(&mut self, callback: F) -> Result<(), MissingGlobal>
     where
         F: FnMut(WlSeat, DndEvent, DispatchData) + 'static,
     {
         self.data_device_manager.set_callback(callback)
     }
 
-    fn with_device<F: FnOnce(&DataDevice)>(&self, seat: &WlSeat, f: F) -> Result<(), ()> {
+    fn with_device<F: FnOnce(&DataDevice)>(&self, seat: &WlSeat, f: F) -> Result<(), MissingGlobal> {
         self.data_device_manager.with_device(seat, f)
     }
 }

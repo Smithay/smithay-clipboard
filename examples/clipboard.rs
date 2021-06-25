@@ -3,11 +3,8 @@ use std::io::{BufWriter, Seek, SeekFrom, Write};
 use sctk::seat;
 use sctk::seat::keyboard::{self, Event as KeyboardEvent, KeyState, RepeatKind};
 use sctk::shm::MemPool;
-use sctk::window::{ConceptFrame, Event as WindowEvent};
+use sctk::window::{Event as WindowEvent, FallbackFrame};
 
-use sctk::reexports::calloop::Source as EventLoopSource;
-use sctk::reexports::client::protocol::wl_keyboard::WlKeyboard;
-use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::protocol::wl_shm;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 
@@ -35,7 +32,7 @@ fn main() {
         .expect("unable to connect to a Wayland compositor.");
 
     // Create event loop
-    let mut event_loop = sctk::reexports::calloop::EventLoop::<DispatchData>::new().unwrap();
+    let mut event_loop = sctk::reexports::calloop::EventLoop::<DispatchData>::try_new().unwrap();
 
     // Initial window dimentions
     let mut dimentions = (320u32, 240u32);
@@ -45,7 +42,7 @@ fn main() {
 
     // Create window
     let mut window = env
-        .create_window::<ConceptFrame, _>(
+        .create_window::<FallbackFrame, _>(
             surface,
             None,
             dimentions,
@@ -77,7 +74,7 @@ fn main() {
     let mut pools = env.create_double_pool(|_| {}).expect("failed to create a memory pool.");
 
     // Structure to track seats
-    let mut seats = Vec::<(WlSeat, Option<(WlKeyboard, EventLoopSource<_>)>)>::new();
+    let mut seats = Vec::new();
 
     // Process existing seats
     for seat in env.get_all_seats() {

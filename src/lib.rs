@@ -3,7 +3,7 @@
 //! Provides access to the Wayland clipboard for gui applications. The user should have surface
 //! around.
 
-#![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use, clippy::wrong_pub_self_convention)]
+#![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use)]
 use std::ffi::c_void;
 use std::io::Result;
 use std::sync::mpsc::{self, Receiver, Sender};

@@ -1,4 +1,3 @@
-use sctk::MissingGlobal;
 use sctk::data_device::{DataDevice, DataDeviceHandler, DataDeviceHandling, DndEvent};
 use sctk::primary_selection::{
     PrimarySelectionDevice, PrimarySelectionDeviceManager, PrimarySelectionHandler,
@@ -7,6 +6,7 @@ use sctk::primary_selection::{
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::{Attached, DispatchData};
 use sctk::seat::{SeatData, SeatHandler, SeatHandling, SeatListener};
+use sctk::MissingGlobal;
 
 /// Environemt setup for smithay-clipboard.
 pub struct SmithayClipboard {
@@ -57,7 +57,11 @@ impl DataDeviceHandling for SmithayClipboard {
         self.data_device_manager.set_callback(callback)
     }
 
-    fn with_device<F: FnOnce(&DataDevice)>(&self, seat: &WlSeat, f: F) -> Result<(), MissingGlobal> {
+    fn with_device<F: FnOnce(&DataDevice)>(
+        &self,
+        seat: &WlSeat,
+        f: F,
+    ) -> Result<(), MissingGlobal> {
         self.data_device_manager.with_device(seat, f)
     }
 }

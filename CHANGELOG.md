@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update SCTK to 0.15, updating wayland-rs to `0.29`
+
 ## 0.6.4 -- 2021-06-25
 
 - Update SCTK to 0.14, significantly reducing the depdendency tree

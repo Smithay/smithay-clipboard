@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.5 -- 2021-10-31
+
 - Update SCTK to 0.15, updating wayland-rs to `0.29`
 
 ## 0.6.4 -- 2021-06-25

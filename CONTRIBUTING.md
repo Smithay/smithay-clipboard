@@ -6,4 +6,4 @@ Smithay Clipboard is open to contributions from anyone.
 
 There is a Matrix room dedicated to the Smithay project:
 [#smithay:matrix.org](https://matrix.to/#/#smithay:matrix.org). If you don't want to use matrix, this room is
-also bridged to gitter: https://gitter.im/smithay/Lobby and freenode: `#smithay`.
+also bridged to libera.chat: `#smithay`.

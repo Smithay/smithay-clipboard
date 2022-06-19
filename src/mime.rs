@@ -45,5 +45,5 @@ impl ToString for MimeType {
 /// RFC-2046, however the platform line terminator and what applications
 /// expect is LF.
 pub fn normalize_to_lf(text: String) -> String {
-    text.replace("\r\n", "\n").replace("\r", "\n")
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }

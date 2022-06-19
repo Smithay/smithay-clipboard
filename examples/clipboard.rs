@@ -101,8 +101,8 @@ fn main() {
 
             // Insert repeat rate handling source
             match keyboard_mapping_result {
-                Ok((keyboard, repeat_source)) => {
-                    seats.push((seat.detach(), Some((keyboard, repeat_source))));
+                Ok(keyboard) => {
+                    seats.push((seat.detach(), Some(keyboard)));
                 }
                 Err(err) => {
                     eprintln!("Failed to map keyboard on seat {:?} : {:?}", seat_data.name, err);
@@ -143,19 +143,18 @@ fn main() {
 
                 // Insert repeat rate source
                 match keyboard_mapping_result {
-                    Ok((keyboard, repeat_source)) => {
-                        *mapped_keyboard = Some((keyboard, repeat_source));
+                    Ok(keyboard) => {
+                        *mapped_keyboard = Some(keyboard);
                     }
                     Err(err) => {
                         eprintln!("Failed to map keyboard on seat {} : {:?}", seat_data.name, err);
                     }
                 }
             }
-        } else if let Some((keyboard, repeat_source)) = mapped_keyboard.take() {
+        } else if let Some(keyboard) = mapped_keyboard.take() {
             if keyboard.as_ref().version() >= 3 {
                 keyboard.release();
             }
-            event_loop_handle.remove(repeat_source);
         }
     });
 

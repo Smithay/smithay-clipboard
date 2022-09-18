@@ -71,15 +71,19 @@ macro_rules! handle_load {
 macro_rules! handle_store {
     ($env:ident,
      $sel_source:ident, $sel_device:ident, $event_ty:ident,
-     $seat:ident, $serial:ident, $queue:ident, $contents:ident) => {
+     $seat:ident, $serial:ident, $queue:ident, $contents:ident, $tx:ident) => {
+        let uuid = Uuid::new();
+        let tx = $tx.clone();
+        tx.send(InternalCommand::RegisterData(uuid, $contents)).unwrap();
         let data_source = $env.$sel_source(
             vec![MimeType::TextPlainUtf8.to_string(), MimeType::Utf8String.to_string()],
-            move |event, _| {
-                if let $event_ty::Send { mut pipe, .. } = event {
-                    // If we fail to write here, it means that other side closed the pipe, thus
-                    // we can't do anything about it.
-                    let _ = write!(pipe, "{}", $contents);
+            move |event, _| match event {
+                $event_ty::Send { pipe, .. } => {
+                    tx.send(InternalCommand::SendData(uuid, pipe)).unwrap()
                 }
+                $event_ty::Cancelled => tx.send(InternalCommand::ReleaseData(uuid)).unwrap(),
+                #[allow(unreachable_patterns)]
+                _ => (),
             },
         );
 

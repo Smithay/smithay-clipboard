@@ -12,6 +12,7 @@ keywords = ["clipboard", "wayland"]
 [dependencies]
 sctk = { package = "smithay-client-toolkit", version = "0.16", default-features = false }
 wayland-client = { version = "0.29", features = ["use_system_lib"] }
+libc = "0.2"
 
 [dev-dependencies]
 sctk = { package = "smithay-client-toolkit", version = "0.16", default-features = false, features = ["calloop"] }

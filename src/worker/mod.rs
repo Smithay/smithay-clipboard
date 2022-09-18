@@ -1,12 +1,15 @@
+use std::collections::HashMap;
 use std::io::prelude::*;
 use std::io::Result;
-use std::sync::mpsc::{Receiver, Sender};
+use std::os::unix::io::AsRawFd;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 use sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager;
 use sctk::reexports::client::Display;
 
-use sctk::data_device::DataSourceEvent;
+use sctk::data_device::{DataSourceEvent, WritePipe};
 use sctk::primary_selection::PrimarySelectionSourceEvent;
 
 use sctk::environment::Environment;
@@ -59,6 +62,55 @@ pub enum Command {
     LoadPrimary,
     /// Shutdown the worker.
     Exit,
+}
+
+#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+struct Uuid(u64);
+
+impl Uuid {
+    pub fn new() -> Self {
+        static UUID: AtomicU64 = AtomicU64::new(1);
+        Self(UUID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+enum InternalCommand {
+    RegisterData(Uuid, String),
+    SendData(Uuid, WritePipe),
+    ReleaseData(Uuid),
+}
+
+fn internal_worker_impl(commands: Receiver<InternalCommand>) {
+    let mut store = HashMap::new();
+    while let Ok(cmd) = commands.recv() {
+        match cmd {
+            InternalCommand::RegisterData(uuid, data) => {
+                store.insert(uuid, data);
+            }
+            InternalCommand::SendData(uuid, mut pipe) => {
+                if let Some(data) = store.get(&uuid) {
+                    // ensure the pipe is blocking
+                    unsafe {
+                        let flags = libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL);
+                        if flags == -1 {
+                            continue;
+                        }
+                        let fcntl_result =
+                            libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                        if fcntl_result == -1 {
+                            continue;
+                        }
+                    }
+                    // If we fail to write here, it means that other side closed the pipe, thus
+                    // we can't do anything about it.
+                    pipe.write_all(data.as_bytes()).ok();
+                }
+            }
+            InternalCommand::ReleaseData(uuid) => {
+                store.remove(&uuid);
+            }
+        }
+    }
 }
 
 /// Handle clipboard requests.
@@ -197,6 +249,12 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
     // Setup sleep amount tracker.
     let mut sa_tracker = SleepAmountTracker::new(MAX_TIME_TO_SLEEP, MAX_WARM_WAKEUPS);
 
+    let (internal_tx, internal_rx) = channel();
+
+    std::thread::spawn(move || {
+        internal_worker_impl(internal_rx);
+    });
+
     loop {
         // Try to get event from the user.
         if let Ok(request) = request_rx.try_recv() {
@@ -245,7 +303,8 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
                             seat,
                             serial,
                             queue,
-                            contents
+                            contents,
+                            internal_tx
                         );
                     }
                 }
@@ -266,7 +325,8 @@ fn worker_impl(display: Display, request_rx: Receiver<Command>, reply_tx: Sender
                             seat,
                             serial,
                             queue,
-                            contents
+                            contents,
+                            internal_tx
                         );
                     }
                 }

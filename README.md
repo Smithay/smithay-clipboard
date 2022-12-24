@@ -1,4 +1,4 @@
-[![crates.io](http://meritbadge.herokuapp.com/smithay-clipboard)](https://crates.io/crates/smithay-clipboard)
+[![crates.io](https://img.shields.io/crates/v/smithay-clipboard.svg)](https://crates.io/crates/smithay-clipboard)
 [![Build Status](https://travis-ci.org/Smithay/smithay-clipboard.svg?branch=master)](https://travis-ci.org/Smithay/smithay-clipboard)
 
 

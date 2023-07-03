@@ -73,7 +73,11 @@ macro_rules! handle_store {
      $sel_source:ident, $sel_device:ident, $event_ty:ident,
      $seat:ident, $serial:ident, $queue:ident, $contents:ident) => {
         let data_source = $env.$sel_source(
-            vec![MimeType::TextPlainUtf8.to_string(), MimeType::Utf8String.to_string()],
+            vec![
+                MimeType::TextPlainUtf8.to_string(),
+                MimeType::TextPlain.to_string(),
+                MimeType::Utf8String.to_string(),
+            ],
             move |event, _| {
                 if let $event_ty::Send { mut pipe, .. } = event {
                     // If we fail to write here, it means that other side closed the pipe, thus

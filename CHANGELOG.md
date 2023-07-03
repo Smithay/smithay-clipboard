@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow text/plain text type without charset parameter
+
 ## 0.6.6 -- 2022-06-20
 
 - Update SCTK to 0.16

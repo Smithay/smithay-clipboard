@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Update SCTK to 0.18
+- Fix active polling of the clipboard each 50ms
+- Fix freeze when copying data larger than the pipe buffer size
+
 ## 0.6.6 -- 2022-06-20
 
 - Update SCTK to 0.16

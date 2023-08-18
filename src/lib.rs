@@ -1,17 +1,19 @@
 //! Smithay Clipboard
 //!
-//! Provides access to the Wayland clipboard for gui applications. The user should have surface
-//! around.
+//! Provides access to the Wayland clipboard for gui applications. The user
+//! should have surface around.
 
 #![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use)]
 use std::ffi::c_void;
 use std::io::Result;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 
-use sctk::reexports::client::Display;
+use sctk::reexports::calloop::channel::{self, Sender};
+use sctk::reexports::client::backend::Backend;
+use sctk::reexports::client::Connection;
 
-mod env;
 mod mime;
+mod state;
 mod worker;
 
 /// Access to a Wayland clipboard.
@@ -22,24 +24,24 @@ pub struct Clipboard {
 }
 
 impl Clipboard {
-    /// Creates new clipboard which will be running on its own thread with its own event queue to
-    /// handle clipboard requests.
+    /// Creates new clipboard which will be running on its own thread with its
+    /// own event queue to handle clipboard requests.
     ///
     /// # Safety
     ///
     /// `display` must be a valid `*mut wl_display` pointer, and it must remain
     /// valid for as long as `Clipboard` object is alive.
     pub unsafe fn new(display: *mut c_void) -> Self {
-        let display = Display::from_external_display(display as *mut _);
+        let backend = unsafe { Backend::from_foreign_display(display.cast()) };
+        let connection = Connection::from_backend(backend);
 
         // Create channel to send data to clipboard thread.
-        let (request_sender, clipboard_request_receiver) = mpsc::channel();
+        let (request_sender, rx_chan) = channel::channel();
         // Create channel to get data from the clipboard thread.
         let (clipboard_reply_sender, request_receiver) = mpsc::channel();
 
         let name = String::from("smithay-clipboard");
-        let clipboard_thread =
-            worker::spawn(name, display, clipboard_request_receiver, clipboard_reply_sender);
+        let clipboard_thread = worker::spawn(name, connection, rx_chan, clipboard_reply_sender);
 
         Self { request_receiver, request_sender, clipboard_thread }
     }

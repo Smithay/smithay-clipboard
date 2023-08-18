@@ -37,9 +37,16 @@ jobs:
       - uses: hecrj/setup-rust-action@v1
         with:
           rust-version: ${{ matrix.rust_version }}
+          components: clippy
 
-      - name: Check documentation
-        run: cargo doc --no-deps --document-private-items
+      - name: Install system dependencies
+        run: sudo apt-get install libxkbcommon-dev libwayland-dev
 
       - name: Run tests
         run: cargo test --verbose
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Check documentation
+        run: cargo doc --no-deps --document-private-items

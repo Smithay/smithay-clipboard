@@ -1,5 +1,5 @@
 /// List of allowed mimes.
-static ALLOWED_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "UTF8_STRING"];
+pub static ALLOWED_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "UTF8_STRING"];
 
 /// Mime type supported by clipboard.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -18,8 +18,8 @@ pub enum MimeType {
 impl MimeType {
     /// Find first allowed mime type among the `offered_mime_types`.
     ///
-    /// `find_allowed()` searches for mime type clipboard supports, if we have a match,
-    /// returns `Some(MimeType)`, otherwise `None`.
+    /// `find_allowed()` searches for mime type clipboard supports, if we have a
+    /// match, returns `Some(MimeType)`, otherwise `None`.
     pub fn find_allowed(offered_mime_types: &[String]) -> Option<Self> {
         for offered_mime_type in offered_mime_types.iter() {
             if offered_mime_type == ALLOWED_MIME_TYPES[Self::TextPlainUtf8 as usize] {

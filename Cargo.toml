@@ -1,8 +1,8 @@
 [package]
 name = "smithay-clipboard"
 version = "0.6.6"
-authors = ["Kirill Chibisov <contact@kchibisov.com>", "Victor Berger <victor.berger@m4x.org>", "Lucas Timmins <timmins.s.lucas@gmail.com>"]
-edition = "2018"
+authors = ["Kirill Chibisov <contact@kchibisov.com>", "Victor Berger <victor.berger@m4x.org>"]
+edition = "2021"
 description = "Provides access to the wayland clipboard for client applications."
 repository = "https://github.com/smithay/smithay-clipboard"
 documentation = "https://smithay.github.io/smithay-clipboard"
@@ -11,12 +11,13 @@ keywords = ["clipboard", "wayland"]
 rust-version = "1.65.0"
 
 [dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.16", default-features = false }
-wayland-client = { version = "0.29", features = ["use_system_lib"] }
+libc = "0.2.149"
+sctk = { package = "smithay-client-toolkit", version = "0.18.0", default-features = false, features = ["calloop"] }
+wayland-backend = { version = "0.3.0", default_features = false, features = ["client_system"] }
 
 [dev-dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.16", default-features = false, features = ["calloop"] }
+sctk = { package = "smithay-client-toolkit", version = "0.18.0", default-features = false, features = ["calloop", "xkbcommon"] }
 
 [features]
 default = ["dlopen"]
-dlopen = ["sctk/dlopen", "wayland-client/dlopen"]
+dlopen = ["wayland-backend/dlopen" ]

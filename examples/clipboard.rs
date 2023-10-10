@@ -1,269 +1,405 @@
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+// The example just demonstrates how to integrate the smithay-clipboard into the
+// application. For more details on what is going on, consult the
+// `smithay-client-toolkit` examples.
 
-use sctk::seat;
-use sctk::seat::keyboard::{self, Event as KeyboardEvent, KeyState, RepeatKind};
-use sctk::shm::MemPool;
-use sctk::window::{Event as WindowEvent, FallbackFrame};
+use std::convert::TryInto;
 
-use sctk::reexports::client::protocol::wl_shm;
-use sctk::reexports::client::protocol::wl_surface::WlSurface;
+use sctk::compositor::{CompositorHandler, CompositorState};
+use sctk::output::{OutputHandler, OutputState};
+use sctk::reexports::calloop::{EventLoop, LoopHandle};
+use sctk::reexports::calloop_wayland_source::WaylandSource;
+use sctk::reexports::client::globals::registry_queue_init;
+use sctk::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
+use sctk::reexports::client::{Connection, Proxy, QueueHandle};
+use sctk::registry::{ProvidesRegistryState, RegistryState};
+use sctk::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers};
+use sctk::seat::{Capability, SeatHandler, SeatState};
+use sctk::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
+use sctk::shell::xdg::XdgShell;
+use sctk::shell::WaylandSurface;
+use sctk::shm::slot::{Buffer, SlotPool};
+use sctk::shm::{Shm, ShmHandler};
+use sctk::{
+    delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
+    delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
+};
+use smithay_clipboard::{self, Clipboard};
 
-use smithay_clipboard::Clipboard;
-
-sctk::default_environment!(ClipboardExample, desktop);
-
-/// Our dispatch data for simple clipboard access and processing frame events.
-struct DispatchData {
-    /// Pending event from SCTK to update window.
-    pub pending_frame_event: Option<WindowEvent>,
-    /// Clipboard handler.
-    pub clipboard: Clipboard,
-}
-
-impl DispatchData {
-    fn new(clipboard: Clipboard) -> Self {
-        Self { pending_frame_event: None, clipboard }
-    }
-}
+const MIN_DIM_SIZE: usize = 256;
 
 fn main() {
-    // Setup default desktop environment
-    let (env, display, queue) = sctk::new_default_environment!(ClipboardExample, desktop)
-        .expect("unable to connect to a Wayland compositor.");
+    let connection = Connection::connect_to_env().unwrap();
+    let (globals, event_queue) = registry_queue_init(&connection).unwrap();
+    let queue_handle = event_queue.handle();
+    let mut event_loop: EventLoop<SimpleWindow> =
+        EventLoop::try_new().expect("Failed to initialize the event loop!");
+    let loop_handle = event_loop.handle();
+    WaylandSource::new(connection.clone(), event_queue).insert(loop_handle).unwrap();
 
-    // Create event loop
-    let mut event_loop = sctk::reexports::calloop::EventLoop::<DispatchData>::try_new().unwrap();
+    let compositor =
+        CompositorState::bind(&globals, &queue_handle).expect("wl_compositor not available");
+    let xdg_shell = XdgShell::bind(&globals, &queue_handle).expect("xdg shell is not available");
 
-    // Initial window dimentions
-    let mut dimentions = (320u32, 240u32);
+    let shm = Shm::bind(&globals, &queue_handle).expect("wl shm is not available.");
+    let surface = compositor.create_surface(&queue_handle);
+    let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &queue_handle);
 
-    // Create surface
-    let surface = env.create_surface().detach();
+    window.set_title(String::from("smithay-clipboard example. Press C/c/P/p to copy/paste"));
+    window.set_min_size(Some((MIN_DIM_SIZE as u32, MIN_DIM_SIZE as u32)));
+    window.commit();
 
-    // Create window
-    let mut window = env
-        .create_window::<FallbackFrame, _>(
-            surface,
-            None,
-            dimentions,
-            move |event, mut dispatch_data| {
-                // Get our dispath data
-                let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
+    let clipboard = unsafe { Clipboard::new(connection.display().id().as_ptr() as *mut _) };
 
-                // Keep last event in priority order : Close > Configure > Refresh
-                let should_replace_event = match (&event, &dispatch_data.pending_frame_event) {
-                    (_, &None)
-                    | (_, &Some(WindowEvent::Refresh))
-                    | (&WindowEvent::Configure { .. }, &Some(WindowEvent::Configure { .. }))
-                    | (&WindowEvent::Close, _) => true,
-                    _ => false,
-                };
+    let pool = SlotPool::new(MIN_DIM_SIZE * MIN_DIM_SIZE * 4, &shm).expect("Failed to create pool");
 
-                if should_replace_event {
-                    dispatch_data.pending_frame_event = Some(event);
-                }
-            },
-        )
-        .expect("failed to create a window.");
+    let mut simple_window = SimpleWindow {
+        registry_state: RegistryState::new(&globals),
+        seat_state: SeatState::new(&globals, &queue_handle),
+        output_state: OutputState::new(&globals, &queue_handle),
+        shm,
+        clipboard,
 
-    // Set title and app id
-    window.set_title(String::from("smithay-clipboard example. Press C/P to copy/paste"));
-    window.set_app_id(String::from("smithay-clipboard-example"));
-
-    // Create memory pool
-    let mut pools = env.create_double_pool(|_| {}).expect("failed to create a memory pool.");
-
-    // Structure to track seats
-    let mut seats = Vec::new();
-
-    // Process existing seats
-    for seat in env.get_all_seats() {
-        let seat_data = match seat::with_seat_data(&seat, |seat_data| seat_data.clone()) {
-            Some(seat_data) => seat_data,
-            _ => continue,
-        };
-
-        if seat_data.has_keyboard && !seat_data.defunct {
-            // Suply event_loop's handle to handle key repeat
-            let event_loop_handle = event_loop.handle();
-
-            // Map keyboard for exising seats
-            let keyboard_mapping_result = keyboard::map_keyboard_repeat(
-                event_loop_handle,
-                &seat,
-                None,
-                RepeatKind::System,
-                move |event, _, mut dispatch_data| {
-                    let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
-                    process_keyboard_event(event, dispatch_data);
-                },
-            );
-
-            // Insert repeat rate handling source
-            match keyboard_mapping_result {
-                Ok(keyboard) => {
-                    seats.push((seat.detach(), Some(keyboard)));
-                }
-                Err(err) => {
-                    eprintln!("Failed to map keyboard on seat {:?} : {:?}", seat_data.name, err);
-                    seats.push((seat.detach(), None));
-                }
-            }
-        } else {
-            // Handle seats without keyboard, since they can gain keyboard later
-            seats.push((seat.detach(), None));
-        }
-    }
-
-    // Implement event listener for seats to handle capability change, etc
-    let event_loop_handle = event_loop.handle();
-    let _listener = env.listen_for_seats(move |seat, seat_data, _| {
-        // find the seat in the vec of seats or insert it
-        let idx = seats.iter().position(|(st, _)| st == &seat.detach());
-        let idx = idx.unwrap_or_else(|| {
-            seats.push((seat.detach(), None));
-            seats.len() - 1
-        });
-
-        let (_, mapped_keyboard) = &mut seats[idx];
-
-        if seat_data.has_keyboard && !seat_data.defunct {
-            // Map keyboard if it's not mapped already
-            if mapped_keyboard.is_none() {
-                let keyboard_mapping_result = keyboard::map_keyboard_repeat(
-                    event_loop_handle.clone(),
-                    &seat,
-                    None,
-                    RepeatKind::System,
-                    move |event, _, mut dispatch_data| {
-                        let dispatch_data = dispatch_data.get::<DispatchData>().unwrap();
-                        process_keyboard_event(event, dispatch_data);
-                    },
-                );
-
-                // Insert repeat rate source
-                match keyboard_mapping_result {
-                    Ok(keyboard) => {
-                        *mapped_keyboard = Some(keyboard);
-                    }
-                    Err(err) => {
-                        eprintln!("Failed to map keyboard on seat {} : {:?}", seat_data.name, err);
-                    }
-                }
-            }
-        } else if let Some(keyboard) = mapped_keyboard.take() {
-            if keyboard.as_ref().version() >= 3 {
-                keyboard.release();
-            }
-        }
-    });
-
-    if !env.get_shell().unwrap().needs_configure() {
-        if let Some(pool) = pools.pool() {
-            draw(pool, window.surface().clone(), dimentions).expect("failed to draw.")
-        }
-        // Refresh our frame
-        window.refresh();
-    }
-
-    sctk::WaylandSource::new(queue).quick_insert(event_loop.handle()).unwrap();
-
-    let clipboard = unsafe { Clipboard::new(display.get_display_ptr() as *mut _) };
-    let mut dispatch_data = DispatchData::new(clipboard);
-
-    loop {
-        if let Some(frame_event) = dispatch_data.pending_frame_event.take() {
-            match frame_event {
-                WindowEvent::Close => break,
-                WindowEvent::Refresh => {
-                    window.refresh();
-                    window.surface().commit();
-                }
-                WindowEvent::Configure { new_size, .. } => {
-                    if let Some((w, h)) = new_size {
-                        window.resize(w, h);
-                        dimentions = (w, h)
-                    }
-                    window.refresh();
-                    if let Some(pool) = pools.pool() {
-                        draw(pool, window.surface().clone(), dimentions).expect("failed to draw.")
-                    }
-                }
-            }
-        }
-
-        display.flush().unwrap();
-
-        event_loop.dispatch(None, &mut dispatch_data).unwrap();
-    }
-}
-
-fn process_keyboard_event(event: KeyboardEvent, dispatch_data: &mut DispatchData) {
-    let text = match event {
-        KeyboardEvent::Key { state, utf8: Some(text), .. } if state == KeyState::Pressed => text,
-        KeyboardEvent::Repeat { utf8: Some(text), .. } => text,
-        _ => return,
+        exit: false,
+        first_configure: true,
+        pool,
+        width: 256,
+        height: 256,
+        buffer: None,
+        window,
+        keyboard: None,
+        keyboard_focus: false,
+        loop_handle: event_loop.handle(),
     };
 
-    match text.as_str() {
-        // Paste primary.
-        "P" => {
-            let contents = dispatch_data
-                .clipboard
-                .load_primary()
-                .unwrap_or_else(|_| String::from("Failed to load primary selection"));
-            println!("Paste from primary clipboard: {}", contents);
+    // We don't draw immediately, the configure will notify us when to first draw.
+    loop {
+        event_loop.dispatch(None, &mut simple_window).unwrap();
+
+        if simple_window.exit {
+            break;
         }
-        // Paste.
-        "p" => {
-            let contents = dispatch_data
-                .clipboard
-                .load()
-                .unwrap_or_else(|_| String::from("Failed to load selection"));
-            println!("Paste: {}", contents);
-        }
-        // Copy primary.
-        "C" => {
-            let text = String::from("Copy primary");
-            dispatch_data.clipboard.store_primary(text.clone());
-            println!("Copied string into primary selection buffer: {}", text);
-        }
-        // Copy.
-        "c" => {
-            let text = String::from("Copy");
-            dispatch_data.clipboard.store(text.clone());
-            println!("Copied string: {}", text);
-        }
-        _ => (),
     }
 }
 
-fn draw(
-    pool: &mut MemPool,
-    surface: WlSurface,
-    dimensions: (u32, u32),
-) -> Result<(), std::io::Error> {
-    pool.resize((4 * dimensions.0 * dimensions.1) as usize).expect("failed to resize memory pool");
+struct SimpleWindow {
+    registry_state: RegistryState,
+    seat_state: SeatState,
+    output_state: OutputState,
+    shm: Shm,
+    clipboard: Clipboard,
 
-    {
-        pool.seek(SeekFrom::Start(0))?;
-        let mut writer = BufWriter::new(&mut *pool);
-        for _ in 0..dimensions.0 * dimensions.1 {
-            // ARGB color written in LE, so it's #FF1C1C1C
-            writer.write_all(&[0x1c, 0x1c, 0x1c, 0xff])?;
-        }
-        writer.flush()?;
+    exit: bool,
+    first_configure: bool,
+    pool: SlotPool,
+    width: u32,
+    height: u32,
+    buffer: Option<Buffer>,
+    window: Window,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard_focus: bool,
+    loop_handle: LoopHandle<'static, SimpleWindow>,
+}
+
+impl CompositorHandler for SimpleWindow {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+        // Not needed for this example.
     }
 
-    let new_buffer = pool.buffer(
-        0,
-        dimensions.0 as i32,
-        dimensions.1 as i32,
-        4 * dimensions.0 as i32,
-        wl_shm::Format::Argb8888,
-    );
-    surface.attach(Some(&new_buffer), 0, 0);
-    surface.commit();
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+        // Not needed for this example.
+    }
 
-    Ok(())
+    fn frame(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+        self.draw(conn, qh);
+    }
+}
+
+impl OutputHandler for SimpleWindow {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl WindowHandler for SimpleWindow {
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
+        self.exit = true;
+    }
+
+    fn configure(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _window: &Window,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        println!("Window configured to: {:?}", configure);
+
+        self.buffer = None;
+        self.width = configure.new_size.0.map(|v| v.get()).unwrap_or(256);
+        self.height = configure.new_size.1.map(|v| v.get()).unwrap_or(256);
+
+        // Initiate the first draw.
+        if self.first_configure {
+            self.first_configure = false;
+            self.draw(conn, qh);
+        }
+    }
+}
+
+impl SeatHandler for SimpleWindow {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            println!("Set keyboard capability");
+            let keyboard = self
+                .seat_state
+                .get_keyboard_with_repeat(
+                    qh,
+                    &seat,
+                    None,
+                    self.loop_handle.clone(),
+                    Box::new(|_state, _wl_kbd, event| {
+                        println!("Repeat: {:?} ", event);
+                    }),
+                )
+                .expect("Failed to create keyboard");
+
+            self.keyboard = Some(keyboard);
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard && self.keyboard.is_some() {
+            println!("Unset keyboard capability");
+            self.keyboard.take().unwrap().release();
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl KeyboardHandler for SimpleWindow {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+        _: &[u32],
+        keysyms: &[Keysym],
+    ) {
+        if self.window.wl_surface() == surface {
+            println!("Keyboard focus on window with pressed syms: {keysyms:?}");
+            self.keyboard_focus = true;
+        }
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        if self.window.wl_surface() == surface {
+            println!("Release keyboard focus on window");
+            self.keyboard_focus = false;
+        }
+    }
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        match event.utf8.as_deref() {
+            // Paste primary.
+            Some("P") => match self.clipboard.load_primary() {
+                Ok(contents) => println!("Paste from primary clipboard: {contents}"),
+                Err(err) => eprintln!("Error loading from primary clipboard: {err}"),
+            },
+            // Paste clipboard.
+            Some("p") => match self.clipboard.load() {
+                Ok(contents) => println!("Paste from clipboard: {contents}"),
+                Err(err) => eprintln!("Error loading from clipboard: {err}"),
+            },
+            // Copy primary.
+            Some("C") => {
+                let to_store = "Copy primary";
+                self.clipboard.store_primary(to_store);
+                println!("Copied string into primary clipboard: {}", to_store);
+            },
+            // Copy clipboard.
+            Some("c") => {
+                let to_store = "Copy";
+                self.clipboard.store(to_store);
+                println!("Copied string into clipboard: {}", to_store);
+            },
+            _ => (),
+        }
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _event: KeyEvent,
+    ) {
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _modifiers: Modifiers,
+    ) {
+    }
+}
+
+impl ShmHandler for SimpleWindow {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+impl SimpleWindow {
+    pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
+        let width = self.width;
+        let height = self.height;
+        let stride = self.width as i32 * 4;
+
+        let buffer = self.buffer.get_or_insert_with(|| {
+            self.pool
+                .create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
+                .expect("create buffer")
+                .0
+        });
+
+        let canvas = match self.pool.canvas(buffer) {
+            Some(canvas) => canvas,
+            None => {
+                // This should be rare, but if the compositor has not released the previous
+                // buffer, we need double-buffering.
+                let (second_buffer, canvas) = self
+                    .pool
+                    .create_buffer(
+                        self.width as i32,
+                        self.height as i32,
+                        stride,
+                        wl_shm::Format::Argb8888,
+                    )
+                    .expect("create buffer");
+                *buffer = second_buffer;
+                canvas
+            },
+        };
+
+        // Draw to the window:
+        canvas.chunks_exact_mut(4).enumerate().for_each(|(_, chunk)| {
+            // ARGB color.
+            let color = 0xFF181818u32;
+
+            let array: &mut [u8; 4] = chunk.try_into().unwrap();
+            *array = color.to_le_bytes();
+        });
+
+        // Damage the entire window
+        self.window.wl_surface().damage_buffer(0, 0, self.width as i32, self.height as i32);
+
+        // Request our next frame
+        self.window.wl_surface().frame(qh, self.window.wl_surface().clone());
+
+        // Attach and commit to present.
+        buffer.attach_to(self.window.wl_surface()).expect("buffer attach");
+        self.window.commit();
+    }
+}
+
+delegate_compositor!(SimpleWindow);
+delegate_output!(SimpleWindow);
+delegate_shm!(SimpleWindow);
+
+delegate_seat!(SimpleWindow);
+delegate_keyboard!(SimpleWindow);
+
+delegate_xdg_shell!(SimpleWindow);
+delegate_xdg_window!(SimpleWindow);
+
+delegate_registry!(SimpleWindow);
+
+impl ProvidesRegistryState for SimpleWindow {
+    registry_handlers![OutputState, SeatState,];
+
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
 }

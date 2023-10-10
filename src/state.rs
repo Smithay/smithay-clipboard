@@ -217,7 +217,9 @@ impl State {
 
                         // Post-process the content according to mime type.
                         let content = match mime_type {
-                            MimeType::TextPlainUtf8 => normalize_to_lf(content),
+                            MimeType::TextPlainUtf8 | MimeType::TextPlain => {
+                                normalize_to_lf(content)
+                            },
                             MimeType::Utf8String => content,
                         };
 

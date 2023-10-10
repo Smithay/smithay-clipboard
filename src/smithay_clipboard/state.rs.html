@@ -586,6 +586,8 @@
 <a href="#586" id="586">586</a>
 <a href="#587" id="587">587</a>
 <a href="#588" id="588">588</a>
+<a href="#589" id="589">589</a>
+<a href="#590" id="590">590</a>
 </pre></div><pre class="rust"><code><span class="kw">use </span>std::borrow::Cow;
 <span class="kw">use </span>std::collections::HashMap;
 <span class="kw">use </span>std::io::{Error, ErrorKind, Read, <span class="prelude-ty">Result</span>, Write};
@@ -805,7 +807,9 @@
 
                         <span class="comment">// Post-process the content according to mime type.
                         </span><span class="kw">let </span>content = <span class="kw">match </span>mime_type {
-                            MimeType::TextPlainUtf8 =&gt; normalize_to_lf(content),
+                            MimeType::TextPlainUtf8 | MimeType::TextPlain =&gt; {
+                                normalize_to_lf(content)
+                            },
                             MimeType::Utf8String =&gt; content,
                         };
 

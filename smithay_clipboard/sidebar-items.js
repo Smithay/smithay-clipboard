@@ -1,1 +1,1 @@
-initSidebarItems({"struct":[["Clipboard","Access to a Wayland clipboard."]]});
+window.SIDEBAR_ITEMS = {"struct":["Clipboard"]};

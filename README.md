@@ -1,5 +1,4 @@
 [![crates.io](https://img.shields.io/crates/v/smithay-clipboard.svg)](https://crates.io/crates/smithay-clipboard)
-[![Build Status](https://travis-ci.org/Smithay/smithay-clipboard.svg?branch=master)](https://travis-ci.org/Smithay/smithay-clipboard)
 
 
 # Smithay Clipboard
@@ -17,3 +16,8 @@ this is not what you're looking for.
 The documentation for the master branch is [available online](https://smithay.github.io/smithay-clipboard/).
 
 The documentation for the releases can be found on [docs.rs](https://docs.rs/smithay-clipboard).
+
+## Contact Us
+
+If you have questions or want to discuss the project with us, join our chatroom on matrix:
+[#sctk:matrix.org](https://matrix.to/#/#sctk:matrix.org).

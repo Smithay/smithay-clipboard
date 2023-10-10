@@ -1,6 +1,6 @@
 # Change Log
 
-## Unreleased
+## 0.7.0 -- 2023-10-10
 
 - Update SCTK to 0.18
 - Fix active polling of the clipboard each 50ms

@@ -8,6 +8,7 @@ repository = "https://github.com/smithay/smithay-clipboard"
 documentation = "https://smithay.github.io/smithay-clipboard"
 license = "MIT"
 keywords = ["clipboard", "wayland"]
+rust-version = "1.65.0"
 
 [dependencies]
 sctk = { package = "smithay-client-toolkit", version = "0.16", default-features = false }

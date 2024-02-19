@@ -1,5 +1,9 @@
 # Change Log
 
+## 0.7.1
+
+- Don't panic on display disconnect
+
 ## 0.7.0 -- 2023-10-10
 
 - Update SCTK to 0.18

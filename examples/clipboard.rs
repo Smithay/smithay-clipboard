@@ -2,8 +2,6 @@
 // application. For more details on what is going on, consult the
 // `smithay-client-toolkit` examples.
 
-use std::convert::TryInto;
-
 use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::output::{OutputHandler, OutputState};
 use sctk::reexports::calloop::{EventLoop, LoopHandle};
@@ -23,7 +21,7 @@ use sctk::{
     delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
     delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
-use smithay_clipboard::{self, Clipboard};
+use smithay_clipboard::Clipboard;
 
 const MIN_DIM_SIZE: usize = 256;
 

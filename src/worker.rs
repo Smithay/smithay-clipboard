@@ -95,9 +95,7 @@ fn worker_impl(
     WaylandSource::new(connection, event_queue).insert(loop_handle).unwrap();
 
     loop {
-        event_loop.dispatch(None, &mut state).unwrap();
-
-        if state.exit {
+        if event_loop.dispatch(None, &mut state).is_err() || state.exit {
             break;
         }
     }

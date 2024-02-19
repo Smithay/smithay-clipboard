@@ -42,9 +42,9 @@ impl MimeType {
     }
 }
 
-impl ToString for MimeType {
-    fn to_string(&self) -> String {
-        String::from(ALLOWED_MIME_TYPES[*self as usize])
+impl std::fmt::Display for MimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", ALLOWED_MIME_TYPES[*self as usize])
     }
 }
 

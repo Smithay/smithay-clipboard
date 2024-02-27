@@ -37,7 +37,7 @@ impl AsRef<str> for MimeType {
     fn as_ref(&self) -> &str {
         match self {
             MimeType::Other(s) => s.as_ref(),
-            m => &ALLOWED_TEXT_MIME_TYPES[m.discriminant() as usize],
+            m => ALLOWED_TEXT_MIME_TYPES[m.discriminant() as usize],
         }
     }
 }
@@ -56,7 +56,7 @@ pub trait AllowedMimeTypes: TryFrom<(Vec<u8>, MimeType)> {
 /// Can be converted to data with the available mime types
 pub trait AsMimeTypes {
     /// Available mime types for this data
-    fn available<'a>(&'a self) -> Cow<'static, [MimeType]>;
+    fn available(&self) -> Cow<'static, [MimeType]>;
 
     /// Data as a specific mime_type
     fn as_bytes(&self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>>;

@@ -35,7 +35,7 @@ impl AsMimeTypes for Text {
         Self::allowed()
     }
 
-    fn as_bytes<'a>(&'a self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>> {
+    fn as_bytes(&self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>> {
         match mime_type {
             MimeType::TextPlainUtf8 | MimeType::Utf8String | MimeType::TextPlain => {
                 Some(Cow::Owned(self.0.as_bytes().to_owned()))

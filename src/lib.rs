@@ -58,12 +58,8 @@ impl Clipboard {
 
         if let Ok(reply) = self.request_receiver.recv() {
             match reply {
-                Ok((data, mime)) => {
-                    T::try_from((data, mime)).map_err(|err| std::io::Error::other(err))
-                },
-                Err(err) => {
-                    return Err(err);
-                },
+                Ok((data, mime)) => T::try_from((data, mime)).map_err(std::io::Error::other),
+                Err(err) => Err(err),
             }
         } else {
             // The clipboard thread is dead, however we shouldn't crash downstream, so

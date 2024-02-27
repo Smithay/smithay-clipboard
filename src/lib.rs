@@ -58,7 +58,8 @@ impl Clipboard {
 
         if let Ok(reply) = self.request_receiver.recv() {
             match reply {
-                Ok((data, mime)) => T::try_from((data, mime)).map_err(std::io::Error::other),
+                Ok((data, mime)) => T::try_from((data, mime))
+                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
                 Err(err) => Err(err),
             }
         } else {

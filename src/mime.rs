@@ -19,16 +19,16 @@ pub enum MimeType {
     /// text/plain;charset=utf-8 mime type.
     ///
     /// The primary mime type used by most clients
-    TextPlainUtf8 = 0,
+    TextPlainUtf8,
     /// UTF8_STRING mime type.
     ///
     /// Some X11 clients are using only this mime type, so we
     /// should have it as a fallback just in case.
-    Utf8String = 1,
+    Utf8String,
     /// text/plain mime type.
     ///
     /// Fallback without charset parameter.
-    TextPlain = 2,
+    TextPlain,
     /// Other mime type
     Other(Cow<'static, str>),
 }

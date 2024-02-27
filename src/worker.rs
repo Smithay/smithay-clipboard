@@ -7,6 +7,7 @@ use sctk::reexports::calloop_wayland_source::WaylandSource;
 use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::Connection;
 
+use crate::mime::{AsMimeTypes, MimeType};
 use crate::state::{SelectionTarget, State};
 
 /// Spawn a clipboard worker, which dispatches its own `EventQueue` and handles
@@ -15,7 +16,7 @@ pub fn spawn(
     name: String,
     display: Connection,
     rx_chan: Channel<Command>,
-    worker_replier: Sender<Result<String>>,
+    worker_replier: Sender<Result<(Vec<u8>, MimeType)>>,
 ) -> Option<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name(name)
@@ -26,16 +27,11 @@ pub fn spawn(
 }
 
 /// Clipboard worker thread command.
-#[derive(Eq, PartialEq)]
 pub enum Command {
-    /// Store data to a clipboard.
-    Store(String),
-    /// Store data to a primary selection.
-    StorePrimary(String),
-    /// Load data from a clipboard.
-    Load,
-    /// Load primary selection.
-    LoadPrimary,
+    /// Loads data for the first available mime type in the provided list
+    Load(Vec<MimeType>, SelectionTarget),
+    Store(Box<dyn AsMimeTypes + Send>, SelectionTarget),
+    /// Store Data with the given Mime Types
     /// Shutdown the worker.
     Exit,
 }
@@ -44,7 +40,7 @@ pub enum Command {
 fn worker_impl(
     connection: Connection,
     rx_chan: Channel<Command>,
-    reply_tx: Sender<Result<String>>,
+    reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
 ) {
     let (globals, event_queue) = match registry_queue_init(&connection) {
         Ok(data) => data,
@@ -64,29 +60,23 @@ fn worker_impl(
         .insert_source(rx_chan, |event, _, state| {
             if let channel::Event::Msg(event) = event {
                 match event {
-                    Command::StorePrimary(contents) => {
-                        state.store_selection(SelectionTarget::Primary, contents);
+                    Command::Exit => state.exit = true,
+                    Command::Store(data, target) => {
+                        state.store_selection(target, data);
                     },
-                    Command::Store(contents) => {
-                        state.store_selection(SelectionTarget::Clipboard, contents);
-                    },
-                    Command::Load if state.data_device_manager_state.is_some() => {
-                        if let Err(err) = state.load_selection(SelectionTarget::Clipboard) {
+                    Command::Load(mime_types, target)
+                        if state.data_device_manager_state.is_some() =>
+                    {
+                        if let Err(err) = state.load_selection(target, &mime_types) {
                             let _ = state.reply_tx.send(Err(err));
                         }
                     },
-                    Command::LoadPrimary if state.data_device_manager_state.is_some() => {
-                        if let Err(err) = state.load_selection(SelectionTarget::Primary) {
-                            let _ = state.reply_tx.send(Err(err));
-                        }
-                    },
-                    Command::Load | Command::LoadPrimary => {
+                    Command::Load(..) => {
                         let _ = state.reply_tx.send(Err(Error::new(
                             ErrorKind::Other,
                             "requested selection is not supported",
                         )));
                     },
-                    Command::Exit => state.exit = true,
                 }
             }
         })

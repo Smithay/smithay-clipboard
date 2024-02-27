@@ -1,10 +1,21 @@
+use std::borrow::Cow;
+use thiserror::Error;
+
 /// List of allowed mimes.
-pub static ALLOWED_MIME_TYPES: [&str; 3] =
+pub static ALLOWED_TEXT_MIME_TYPES: [&str; 3] =
     ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Unsupported mime type")]
+    Unsupported,
+}
+
 /// Mime type supported by clipboard.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug, Default)]
+#[repr(u8)]
 pub enum MimeType {
+    #[default]
     /// text/plain;charset=utf-8 mime type.
     ///
     /// The primary mime type used by most clients
@@ -18,6 +29,37 @@ pub enum MimeType {
     ///
     /// Fallback without charset parameter.
     TextPlain = 2,
+    /// Other mime type
+    Other(Cow<'static, str>),
+}
+
+impl AsRef<str> for MimeType {
+    fn as_ref(&self) -> &str {
+        match self {
+            MimeType::Other(s) => s.as_ref(),
+            m => &ALLOWED_TEXT_MIME_TYPES[m.discriminant() as usize],
+        }
+    }
+}
+
+impl MimeType {
+    fn discriminant(&self) -> u8 {
+        unsafe { *(self as *const Self as *const u8) }
+    }
+}
+
+/// Describes the mime types which are accepted
+pub trait AllowedMimeTypes: TryFrom<(Vec<u8>, MimeType)> {
+    fn allowed() -> Cow<'static, [MimeType]>;
+}
+
+/// Can be converted to data with the available mime types
+pub trait AsMimeTypes {
+    /// Available mime types for this data
+    fn available<'a>(&'a self) -> Cow<'static, [MimeType]>;
+
+    /// Data as a specific mime_type
+    fn as_bytes(&self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>>;
 }
 
 impl MimeType {
@@ -25,26 +67,22 @@ impl MimeType {
     ///
     /// `find_allowed()` searches for mime type clipboard supports, if we have a
     /// match, returns `Some(MimeType)`, otherwise `None`.
-    pub fn find_allowed(offered_mime_types: &[String]) -> Option<Self> {
-        let mut fallback = None;
-        for offered_mime_type in offered_mime_types.iter() {
-            if offered_mime_type == ALLOWED_MIME_TYPES[Self::TextPlainUtf8 as usize] {
-                return Some(Self::TextPlainUtf8);
-            } else if offered_mime_type == ALLOWED_MIME_TYPES[Self::Utf8String as usize] {
-                return Some(Self::Utf8String);
-            } else if offered_mime_type == ALLOWED_MIME_TYPES[Self::TextPlain as usize] {
-                // Only use this mime type as a fallback.
-                fallback = Some(Self::TextPlain);
-            }
-        }
-
-        fallback
+    pub fn find_allowed(offered_mime_types: &[String], allowed: &[Self]) -> Option<Self> {
+        allowed
+            .iter()
+            .find(|allowed| {
+                offered_mime_types.iter().any(|offered| offered.as_str() == allowed.as_ref())
+            })
+            .cloned()
     }
 }
 
 impl std::fmt::Display for MimeType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", ALLOWED_MIME_TYPES[*self as usize])
+        match self {
+            MimeType::Other(m) => write!(f, "{}", m),
+            m => write!(f, "{}", ALLOWED_TEXT_MIME_TYPES[m.discriminant() as usize]),
+        }
     }
 }
 

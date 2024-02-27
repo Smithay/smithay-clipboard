@@ -36,12 +36,13 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 };
 use wayland_backend::client::ObjectId;
 
-use crate::mime::{normalize_to_lf, MimeType, ALLOWED_MIME_TYPES};
+use crate::mime::{AsMimeTypes, MimeType};
+use crate::text::Text;
 
 pub struct State {
     pub primary_selection_manager_state: Option<PrimarySelectionManagerState>,
     pub data_device_manager_state: Option<DataDeviceManagerState>,
-    pub reply_tx: Sender<Result<String>>,
+    pub reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
     pub exit: bool,
 
     registry_state: RegistryState,
@@ -55,10 +56,12 @@ pub struct State {
     queue_handle: QueueHandle<Self>,
 
     primary_sources: Vec<PrimarySelectionSource>,
-    primary_selection_content: Rc<[u8]>,
+    primary_selection_content: Box<dyn AsMimeTypes>,
+    primary_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
 
     data_sources: Vec<CopyPasteSource>,
-    data_selection_content: Rc<[u8]>,
+    data_selection_content: Box<dyn AsMimeTypes>,
+    data_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
 }
 
 impl State {
@@ -67,7 +70,7 @@ impl State {
         globals: &GlobalList,
         queue_handle: &QueueHandle<Self>,
         loop_handle: LoopHandle<'static, Self>,
-        reply_tx: Sender<Result<String>>,
+        reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
     ) -> Option<Self> {
         let mut seats = HashMap::new();
 
@@ -87,8 +90,8 @@ impl State {
 
         Some(Self {
             registry_state: RegistryState::new(globals),
-            primary_selection_content: Rc::from([]),
-            data_selection_content: Rc::from([]),
+            primary_selection_content: Box::new(Text(String::new())),
+            data_selection_content: Box::new(Text(String::new())),
             queue_handle: queue_handle.clone(),
             primary_selection_manager_state,
             primary_sources: Vec::new(),
@@ -100,13 +103,19 @@ impl State {
             seat_state,
             reply_tx,
             seats,
+            primary_selection_mime_types: Rc::new(Default::default()),
+            data_selection_mime_types: Rc::new(Default::default()),
         })
     }
 
     /// Store selection for the given target.
     ///
     /// Selection source is only created when `Some(())` is returned.
-    pub fn store_selection(&mut self, ty: SelectionTarget, contents: String) -> Option<()> {
+    pub fn store_selection(
+        &mut self,
+        ty: SelectionTarget,
+        contents: Box<dyn AsMimeTypes>,
+    ) -> Option<()> {
         let latest = self.latest_seat.as_ref()?;
         let seat = self.seats.get_mut(latest)?;
 
@@ -114,22 +123,22 @@ impl State {
             return None;
         }
 
-        let contents = Rc::from(contents.into_bytes());
-
         match ty {
             SelectionTarget::Clipboard => {
                 let mgr = self.data_device_manager_state.as_ref()?;
+                let mime_types = contents.available();
                 self.data_selection_content = contents;
-                let source =
-                    mgr.create_copy_paste_source(&self.queue_handle, ALLOWED_MIME_TYPES.iter());
+                let source = mgr.create_copy_paste_source(&self.queue_handle, mime_types.iter());
+                self.data_selection_mime_types = Rc::new(mime_types);
                 source.set_selection(seat.data_device.as_ref().unwrap(), seat.latest_serial);
                 self.data_sources.push(source);
             },
             SelectionTarget::Primary => {
                 let mgr = self.primary_selection_manager_state.as_ref()?;
+                let mime_types = contents.available();
                 self.primary_selection_content = contents;
-                let source =
-                    mgr.create_selection_source(&self.queue_handle, ALLOWED_MIME_TYPES.iter());
+                let source = mgr.create_selection_source(&self.queue_handle, mime_types.iter());
+                self.primary_selection_mime_types = Rc::new(mime_types);
                 source.set_selection(seat.primary_device.as_ref().unwrap(), seat.latest_serial);
                 self.primary_sources.push(source);
             },
@@ -139,7 +148,11 @@ impl State {
     }
 
     /// Load selection for the given target.
-    pub fn load_selection(&mut self, ty: SelectionTarget) -> Result<()> {
+    pub fn load_selection(
+        &mut self,
+        ty: SelectionTarget,
+        allowed_mime_types: &[MimeType],
+    ) -> Result<()> {
         let latest = self
             .latest_seat
             .as_ref()
@@ -153,7 +166,7 @@ impl State {
             return Err(Error::new(ErrorKind::Other, "client doesn't have focus"));
         }
 
-        let (read_pipe, mime_type) = match ty {
+        let (read_pipe, mut mime_type) = match ty {
             SelectionTarget::Clipboard => {
                 let selection = seat
                     .data_device
@@ -161,8 +174,9 @@ impl State {
                     .and_then(|data| data.data().selection_offer())
                     .ok_or_else(|| Error::new(ErrorKind::Other, "selection is empty"))?;
 
-                let mime_type =
-                    selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
+                let mime_type = selection
+                    .with_mime_types(|offered| MimeType::find_allowed(offered, allowed_mime_types))
+                    .ok_or_else(|| {
                         Error::new(ErrorKind::NotFound, "supported mime-type is not found")
                     })?;
 
@@ -183,8 +197,9 @@ impl State {
                     .and_then(|data| data.data().selection_offer())
                     .ok_or_else(|| Error::new(ErrorKind::Other, "selection is empty"))?;
 
-                let mime_type =
-                    selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
+                let mime_type = selection
+                    .with_mime_types(|offered| MimeType::find_allowed(offered, allowed_mime_types))
+                    .ok_or_else(|| {
                         Error::new(ErrorKind::NotFound, "supported mime-type is not found")
                     })?;
 
@@ -204,26 +219,9 @@ impl State {
             loop {
                 match file.read(&mut reader_buffer) {
                     Ok(0) => {
-                        let utf8 = String::from_utf8_lossy(&content);
-                        let content = match utf8 {
-                            Cow::Borrowed(_) => {
-                                // Don't clone the read data.
-                                let mut to_send = Vec::new();
-                                mem::swap(&mut content, &mut to_send);
-                                String::from_utf8(to_send).unwrap()
-                            },
-                            Cow::Owned(content) => content,
-                        };
-
-                        // Post-process the content according to mime type.
-                        let content = match mime_type {
-                            MimeType::TextPlainUtf8 | MimeType::TextPlain => {
-                                normalize_to_lf(content)
-                            },
-                            MimeType::Utf8String => content,
-                        };
-
-                        let _ = state.reply_tx.send(Ok(content));
+                        let _ = state
+                            .reply_tx
+                            .send(Ok((mem::take(&mut content), mem::take(&mut mime_type))));
                         break PostAction::Remove;
                     },
                     Ok(n) => content.extend_from_slice(&reader_buffer[..n]),
@@ -240,10 +238,12 @@ impl State {
     }
 
     fn send_request(&mut self, ty: SelectionTarget, write_pipe: WritePipe, mime: String) {
-        // We can only send strings, so don't do anything with the mime-type.
-        if MimeType::find_allowed(&[mime]).is_none() {
+        let Some(mime_type) = MimeType::find_allowed(&[mime], match ty {
+            SelectionTarget::Clipboard => &self.data_selection_mime_types,
+            SelectionTarget::Primary => &self.primary_selection_mime_types,
+        }) else {
             return;
-        }
+        };
 
         // Mark FD as non-blocking so we won't block ourselves.
         unsafe {
@@ -255,8 +255,12 @@ impl State {
         // Don't access the content on the state directly, since it could change during
         // the send.
         let contents = match ty {
-            SelectionTarget::Clipboard => self.data_selection_content.clone(),
-            SelectionTarget::Primary => self.primary_selection_content.clone(),
+            SelectionTarget::Clipboard => self.data_selection_content.as_bytes(&mime_type),
+            SelectionTarget::Primary => self.primary_selection_content.as_bytes(&mime_type),
+        };
+
+        let Some(contents) = contents else {
+            return;
         };
 
         let mut written = 0;

@@ -67,13 +67,13 @@ impl MimeType {
     }
 }
 
-/// Describes the mime types which are accepted
+/// Describes the mime types which are accepted.
 pub trait AllowedMimeTypes: TryFrom<(Vec<u8>, MimeType)> {
     /// List allowed mime types for the type to convert from a byte slice.
     fn allowed() -> Cow<'static, [MimeType]>;
 }
 
-/// Can be converted to data with the available mime types
+/// Can be converted to data with the available mime types.
 pub trait AsMimeTypes {
     /// List available mime types for this data to convert to a byte slice.
     fn available(&self) -> Cow<'static, [MimeType]>;

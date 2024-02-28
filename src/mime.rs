@@ -1,15 +1,20 @@
 use std::borrow::Cow;
-use thiserror::Error;
+use std::{error, fmt};
 
 /// List of allowed mimes.
 pub static ALLOWED_TEXT_MIME_TYPES: [&str; 3] =
     ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Unsupported mime type")]
-    Unsupported,
+#[derive(Debug, Clone, Copy)]
+pub struct Error;
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Unsupported mime type")
+    }
 }
+
+impl error::Error for Error {}
 
 /// Mime type supported by clipboard.
 #[derive(Clone, Eq, PartialEq, Debug, Default)]

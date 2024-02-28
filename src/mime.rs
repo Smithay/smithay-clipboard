@@ -86,12 +86,15 @@ pub trait AsMimeTypes {
 }
 
 impl MimeType {
-    /// Find first allowed mime type among the `offered_mime_types`.
+    /// Find first offered mime type among the `allowed_mime_types`.
     ///
     /// `find_allowed()` searches for mime type clipboard supports, if we have a
     /// match, returns `Some(MimeType)`, otherwise `None`.
-    pub fn find_allowed(offered_mime_types: &[String], allowed: &[Self]) -> Option<Self> {
-        allowed
+    pub fn find_allowed(
+        offered_mime_types: &[String],
+        allowed_mime_types: &[Self],
+    ) -> Option<Self> {
+        allowed_mime_types
             .iter()
             .find(|allowed| {
                 offered_mime_types.iter().any(|offered| offered.as_str() == allowed.as_ref())

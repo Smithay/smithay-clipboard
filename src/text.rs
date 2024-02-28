@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::mime::{normalize_to_lf, AllowedMimeTypes, AsMimeTypes, Error, MimeType};
+use crate::mime::{self, normalize_to_lf, AllowedMimeTypes, AsMimeTypes, Error, MimeType};
 
 pub struct Text(pub String);
 
@@ -16,8 +16,10 @@ impl TryFrom<(Vec<u8>, MimeType)> for Text {
 
         // Post-process the content according to mime type.
         let content = match mime_type {
-            MimeType::TextPlainUtf8 | MimeType::TextPlain => normalize_to_lf(content),
-            MimeType::Utf8String => content,
+            MimeType::Text(mime::Text::TextPlainUtf8 | mime::Text::TextPlain) => {
+                normalize_to_lf(content)
+            },
+            MimeType::Text(mime::Text::Utf8String) => content,
             MimeType::Other(_) => return Err(Error),
         };
         Ok(Text(content))
@@ -26,7 +28,11 @@ impl TryFrom<(Vec<u8>, MimeType)> for Text {
 
 impl AllowedMimeTypes for Text {
     fn allowed() -> Cow<'static, [MimeType]> {
-        Cow::Borrowed(&[MimeType::TextPlainUtf8, MimeType::Utf8String, MimeType::TextPlain])
+        Cow::Borrowed(&[
+            MimeType::Text(mime::Text::TextPlainUtf8),
+            MimeType::Text(mime::Text::Utf8String),
+            MimeType::Text(mime::Text::TextPlain),
+        ])
     }
 }
 
@@ -37,9 +43,9 @@ impl AsMimeTypes for Text {
 
     fn as_bytes(&self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>> {
         match mime_type {
-            MimeType::TextPlainUtf8 | MimeType::Utf8String | MimeType::TextPlain => {
-                Some(Cow::Owned(self.0.as_bytes().to_owned()))
-            },
+            MimeType::Text(
+                mime::Text::TextPlainUtf8 | mime::Text::Utf8String | mime::Text::TextPlain,
+            ) => Some(Cow::Owned(self.0.as_bytes().to_owned())),
             MimeType::Other(_) => None,
         }
     }

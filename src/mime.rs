@@ -16,40 +16,54 @@ impl fmt::Display for Error {
 
 impl error::Error for Error {}
 
-/// Mime type supported by clipboard.
-#[derive(Clone, Eq, PartialEq, Debug, Default)]
-#[repr(u8)]
-pub enum MimeType {
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum Text {
     #[default]
     /// text/plain;charset=utf-8 mime type.
     ///
     /// The primary mime type used by most clients
-    TextPlainUtf8,
+    TextPlainUtf8 = 0,
     /// UTF8_STRING mime type.
     ///
     /// Some X11 clients are using only this mime type, so we
     /// should have it as a fallback just in case.
-    Utf8String,
+    Utf8String = 1,
     /// text/plain mime type.
     ///
     /// Fallback without charset parameter.
-    TextPlain,
+    TextPlain = 2,
+}
+
+/// Mime type supported by clipboard.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum MimeType {
+    /// Text mime type.
+    Text(Text),
     /// Other mime type.
     Other(Cow<'static, str>),
+}
+
+impl Default for MimeType {
+    fn default() -> Self {
+        MimeType::Text(Text::default())
+    }
 }
 
 impl AsRef<str> for MimeType {
     fn as_ref(&self) -> &str {
         match self {
             MimeType::Other(s) => s.as_ref(),
-            m => ALLOWED_TEXT_MIME_TYPES[m.discriminant() as usize],
+            m => ALLOWED_TEXT_MIME_TYPES[m.discriminant()],
         }
     }
 }
 
 impl MimeType {
-    fn discriminant(&self) -> u8 {
-        unsafe { *(self as *const Self as *const u8) }
+    fn discriminant(&self) -> usize {
+        match self {
+            MimeType::Text(t) => *t as usize,
+            MimeType::Other(_) => 3,
+        }
     }
 }
 
@@ -87,7 +101,7 @@ impl std::fmt::Display for MimeType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MimeType::Other(m) => write!(f, "{}", m),
-            m => write!(f, "{}", ALLOWED_TEXT_MIME_TYPES[m.discriminant() as usize]),
+            m => write!(f, "{}", ALLOWED_TEXT_MIME_TYPES[m.discriminant()]),
         }
     }
 }

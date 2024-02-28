@@ -34,7 +34,7 @@ pub enum MimeType {
     ///
     /// Fallback without charset parameter.
     TextPlain,
-    /// Other mime type
+    /// Other mime type.
     Other(Cow<'static, str>),
 }
 
@@ -55,15 +55,16 @@ impl MimeType {
 
 /// Describes the mime types which are accepted
 pub trait AllowedMimeTypes: TryFrom<(Vec<u8>, MimeType)> {
+    /// List allowed mime types for the type to convert from a byte slice.
     fn allowed() -> Cow<'static, [MimeType]>;
 }
 
 /// Can be converted to data with the available mime types
 pub trait AsMimeTypes {
-    /// Available mime types for this data
+    /// List available mime types for this data to convert to a byte slice.
     fn available(&self) -> Cow<'static, [MimeType]>;
 
-    /// Data as a specific mime_type
+    /// Converts a type to a byte slice for the given mime type if possible.
     fn as_bytes(&self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>>;
 }
 

@@ -28,10 +28,10 @@ pub fn spawn(
 
 /// Clipboard worker thread command.
 pub enum Command {
-    /// Loads data for the first available mime type in the provided list
+    /// Loads data for the first available mime type in the provided list.
     Load(Vec<MimeType>, SelectionTarget),
+    /// Store Data with the given mime types.
     Store(Box<dyn AsMimeTypes + Send>, SelectionTarget),
-    /// Store Data with the given Mime Types
     /// Shutdown the worker.
     Exit,
 }

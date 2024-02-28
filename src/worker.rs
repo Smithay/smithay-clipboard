@@ -64,10 +64,21 @@ fn worker_impl(
                     Command::Store(data, target) => {
                         state.store_selection(target, data);
                     },
-                    Command::Load(mime_types, target)
+                    Command::Load(mime_types, SelectionTarget::Clipboard)
                         if state.data_device_manager_state.is_some() =>
                     {
-                        if let Err(err) = state.load_selection(target, &mime_types) {
+                        if let Err(err) =
+                            state.load_selection(SelectionTarget::Clipboard, &mime_types)
+                        {
+                            let _ = state.reply_tx.send(Err(err));
+                        }
+                    },
+                    Command::Load(mime_types, SelectionTarget::Primary)
+                        if state.primary_selection_manager_state.is_some() =>
+                    {
+                        if let Err(err) =
+                            state.load_selection(SelectionTarget::Primary, &mime_types)
+                        {
                             let _ = state.reply_tx.send(Err(err));
                         }
                     },

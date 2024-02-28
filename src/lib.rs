@@ -120,16 +120,14 @@ impl Clipboard {
     {
         let _ = self.request_sender.send(worker::Command::Load(T::allowed().to_vec(), target));
 
-        if let Ok(reply) = self.request_receiver.recv() {
-            match reply {
-                Ok((data, mime)) => T::try_from((data, mime))
-                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
-                Err(err) => Err(err),
-            }
-        } else {
-            // The clipboard thread is dead, however we shouldn't crash downstream, so
-            // propogating an error.
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
+        match self.request_receiver.recv() {
+            Ok(res) => res.and_then(|(data, mime)| {
+                T::try_from((data, mime))
+                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+            }),
+            // The clipboard thread is dead, however we shouldn't crash downstream,
+            // so propogating an error.
+            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead.")),
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "smithay-clipboard"
-version = "0.7.1"
+version = "0.8.0"
 authors = ["Kirill Chibisov <contact@kchibisov.com>", "Victor Berger <victor.berger@m4x.org>"]
 edition = "2021"
 description = "Provides access to the wayland clipboard for client applications."

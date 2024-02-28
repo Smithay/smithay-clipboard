@@ -8,7 +8,6 @@ use std::ffi::c_void;
 use std::io::Result;
 use std::sync::mpsc::{self, Receiver};
 
-use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
 use sctk::reexports::calloop::channel::{self, Sender};
 use sctk::reexports::client::backend::Backend;
 use sctk::reexports::client::Connection;
@@ -19,6 +18,8 @@ pub mod mime;
 mod state;
 mod text;
 mod worker;
+
+use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
 
 /// Access to a Wayland clipboard.
 pub struct Clipboard {

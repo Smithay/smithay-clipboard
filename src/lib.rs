@@ -50,25 +50,6 @@ impl Clipboard {
         Self { request_receiver, request_sender, clipboard_thread }
     }
 
-    fn load_inner<T: AllowedMimeTypes + 'static>(&self, target: SelectionTarget) -> Result<T>
-    where
-        <T as TryFrom<(Vec<u8>, MimeType)>>::Error: std::error::Error + Send + Sync,
-    {
-        let _ = self.request_sender.send(worker::Command::Load(T::allowed().to_vec(), target));
-
-        if let Ok(reply) = self.request_receiver.recv() {
-            match reply {
-                Ok((data, mime)) => T::try_from((data, mime))
-                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
-                Err(err) => Err(err),
-            }
-        } else {
-            // The clipboard thread is dead, however we shouldn't crash downstream, so
-            // propogating an error.
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
-        }
-    }
-
     /// Load custom clipboard data.
     ///
     /// Load the requested type from a clipboard on the last observed seat.
@@ -104,11 +85,6 @@ impl Clipboard {
         self.load_primary::<Text>().map(|t| t.0)
     }
 
-    fn store_inner<T: AsMimeTypes + Send + 'static>(&self, data: T, target: SelectionTarget) {
-        let request = worker::Command::Store(Box::new(data), target);
-        let _ = self.request_sender.send(request);
-    }
-
     /// Store custom data to a clipboard.
     ///
     /// Stores data of the provided type to a clipboard on a last observed seat.
@@ -136,6 +112,30 @@ impl Clipboard {
     /// Stores to a primary clipboard on a last observed seat.
     pub fn store_primary_text<T: Into<String>>(&self, text: T) {
         self.store_primary(Text(text.into()));
+    }
+
+    fn load_inner<T: AllowedMimeTypes + 'static>(&self, target: SelectionTarget) -> Result<T>
+    where
+        <T as TryFrom<(Vec<u8>, MimeType)>>::Error: std::error::Error + Send + Sync,
+    {
+        let _ = self.request_sender.send(worker::Command::Load(T::allowed().to_vec(), target));
+
+        if let Ok(reply) = self.request_receiver.recv() {
+            match reply {
+                Ok((data, mime)) => T::try_from((data, mime))
+                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
+                Err(err) => Err(err),
+            }
+        } else {
+            // The clipboard thread is dead, however we shouldn't crash downstream, so
+            // propogating an error.
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
+        }
+    }
+
+    fn store_inner<T: AsMimeTypes + Send + 'static>(&self, data: T, target: SelectionTarget) {
+        let request = worker::Command::Store(Box::new(data), target);
+        let _ = self.request_sender.send(request);
     }
 }
 

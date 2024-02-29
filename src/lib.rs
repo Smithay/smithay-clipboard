@@ -54,10 +54,7 @@ impl Clipboard {
     /// Load custom clipboard data.
     ///
     /// Load the requested type from a clipboard on the last observed seat.
-    pub fn load<T: AllowedMimeTypes + 'static>(&self) -> Result<T>
-    where
-        <T as TryFrom<(Vec<u8>, MimeType)>>::Error: std::error::Error + Send + Sync,
-    {
+    pub fn load<T: AllowedMimeTypes + 'static>(&self) -> Result<T> {
         self.load_inner(SelectionTarget::Clipboard)
     }
 
@@ -72,10 +69,7 @@ impl Clipboard {
     ///
     /// Load the requested type from a primary clipboard on the last observed
     /// seat.
-    pub fn load_primary<T: AllowedMimeTypes + 'static>(&self) -> Result<T>
-    where
-        <T as TryFrom<(Vec<u8>, MimeType)>>::Error: std::error::Error + Send + Sync,
-    {
+    pub fn load_primary<T: AllowedMimeTypes + 'static>(&self) -> Result<T> {
         self.load_inner(SelectionTarget::Primary)
     }
 
@@ -115,16 +109,17 @@ impl Clipboard {
         self.store_primary(Text(text.into()));
     }
 
-    fn load_inner<T: AllowedMimeTypes + 'static>(&self, target: SelectionTarget) -> Result<T>
-    where
-        <T as TryFrom<(Vec<u8>, MimeType)>>::Error: std::error::Error + Send + Sync,
-    {
+    fn load_inner<T: AllowedMimeTypes + 'static>(&self, target: SelectionTarget) -> Result<T> {
         let _ = self.request_sender.send(worker::Command::Load(T::allowed().to_vec(), target));
 
         match self.request_receiver.recv() {
             Ok(res) => res.and_then(|(data, mime)| {
-                T::try_from((data, mime))
-                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+                T::try_from((data, mime)).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to load data of the requested type.",
+                    )
+                })
             }),
             // The clipboard thread is dead, however we shouldn't crash downstream,
             // so propogating an error.

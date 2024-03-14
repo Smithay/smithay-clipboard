@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Result};
 use std::sync::mpsc::Sender;
 
@@ -29,7 +30,7 @@ pub fn spawn(
 /// Clipboard worker thread command.
 pub enum Command {
     /// Loads data for the first available mime type in the provided list.
-    Load(Vec<MimeType>, SelectionTarget),
+    Load(Cow<'static, [MimeType]>, SelectionTarget),
     /// Store Data with the given mime types.
     Store(Box<dyn AsMimeTypes + Send>, SelectionTarget),
     /// Shutdown the worker.

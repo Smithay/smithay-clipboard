@@ -4,6 +4,7 @@
 //! should have surface around.
 
 #![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use)]
+use std::borrow::Cow;
 use std::ffi::c_void;
 use std::io::Result;
 use std::sync::mpsc::{self, Receiver};
@@ -55,7 +56,7 @@ impl Clipboard {
     ///
     /// Load the requested type from a clipboard on the last observed seat.
     pub fn load<T: AllowedMimeTypes + 'static>(&self) -> Result<T> {
-        self.load_inner(SelectionTarget::Clipboard)
+        self.load_inner(SelectionTarget::Clipboard, T::allowed())
     }
 
     /// Load clipboard data.
@@ -70,7 +71,7 @@ impl Clipboard {
     /// Load the requested type from a primary clipboard on the last observed
     /// seat.
     pub fn load_primary<T: AllowedMimeTypes + 'static>(&self) -> Result<T> {
-        self.load_inner(SelectionTarget::Primary)
+        self.load_inner(SelectionTarget::Primary, T::allowed())
     }
 
     /// Load primary clipboard data.
@@ -78,6 +79,26 @@ impl Clipboard {
     /// Loads content from a  primary clipboard on a last observed seat.
     pub fn load_primary_text(&self) -> Result<String> {
         self.load_primary::<Text>().map(|t| t.0)
+    }
+
+    /// Load raw clipboard data.
+    ///
+    /// Loads content from a  primary clipboard on a last observed seat.
+    pub fn load_raw(
+        &self,
+        allowed: impl Into<Cow<'static, [MimeType]>>,
+    ) -> Result<(Vec<u8>, MimeType)> {
+        self.load_inner(SelectionTarget::Clipboard, allowed)
+    }
+
+    /// Load raw primary clipboard data.
+    ///
+    /// Loads content from a  primary clipboard on a last observed seat.
+    pub fn load_primary_raw(
+        &self,
+        allowed: impl Into<Cow<'static, [MimeType]>>,
+    ) -> Result<(Vec<u8>, MimeType)> {
+        self.load_inner(SelectionTarget::Primary, allowed)
     }
 
     /// Store custom data to a clipboard.
@@ -109,8 +130,12 @@ impl Clipboard {
         self.store_primary(Text(text.into()));
     }
 
-    fn load_inner<T: AllowedMimeTypes + 'static>(&self, target: SelectionTarget) -> Result<T> {
-        let _ = self.request_sender.send(worker::Command::Load(T::allowed().to_vec(), target));
+    fn load_inner<T: TryFrom<(Vec<u8>, MimeType)> + 'static>(
+        &self,
+        target: SelectionTarget,
+        allowed: impl Into<Cow<'static, [MimeType]>>,
+    ) -> Result<T> {
+        let _ = self.request_sender.send(worker::Command::Load(allowed.into(), target));
 
         match self.request_receiver.recv() {
             Ok(res) => res.and_then(|(data, mime)| {

@@ -3,6 +3,7 @@
 // `smithay-client-toolkit` examples.
 
 use std::borrow::Cow;
+use std::ffi::c_void;
 use std::str::{FromStr, Utf8Error};
 
 use sctk::compositor::{CompositorHandler, CompositorState};
@@ -10,6 +11,7 @@ use sctk::output::{OutputHandler, OutputState};
 use sctk::reexports::calloop::{EventLoop, LoopHandle};
 use sctk::reexports::calloop_wayland_source::WaylandSource;
 use sctk::reexports::client::globals::registry_queue_init;
+use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
@@ -25,11 +27,19 @@ use sctk::{
     delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
 use smithay_clipboard::mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
-use smithay_clipboard::Clipboard;
+use smithay_clipboard::{Clipboard, SimpleClipboard};
 use thiserror::Error;
 use url::Url;
 
 const MIN_DIM_SIZE: usize = 256;
+
+struct MySurface(WlSurface);
+
+impl smithay_clipboard::dnd::RawSurface for MySurface {
+    unsafe fn get_ptr(&mut self) -> *mut c_void {
+        self.0.id().as_ptr().cast()
+    }
+}
 
 fn main() {
     let connection = Connection::connect_to_env().unwrap();
@@ -55,6 +65,12 @@ fn main() {
     let clipboard = unsafe { Clipboard::new(connection.display().id().as_ptr() as *mut _) };
 
     let pool = SlotPool::new(MIN_DIM_SIZE * MIN_DIM_SIZE * 4, &shm).expect("Failed to create pool");
+    let (tx, rx) = sctk::reexports::calloop::channel::sync_channel(10);
+    clipboard.init_dnd(Box::new(tx));
+
+    event_loop.handle().insert_source(rx, |event, _, state| {
+        dbg!(event);
+    });
 
     let mut simple_window = SimpleWindow {
         registry_state: RegistryState::new(&globals),
@@ -90,7 +106,7 @@ struct SimpleWindow {
     seat_state: SeatState,
     output_state: OutputState,
     shm: Shm,
-    clipboard: Clipboard,
+    clipboard: SimpleClipboard,
 
     exit: bool,
     first_configure: bool,

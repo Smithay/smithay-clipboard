@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Result};
+use std::marker::PhantomData;
 use std::sync::mpsc::Sender;
 
 use sctk::reexports::calloop::channel::Channel;
@@ -13,10 +14,10 @@ use crate::state::{SelectionTarget, State};
 
 /// Spawn a clipboard worker, which dispatches its own `EventQueue` and handles
 /// clipboard requests.
-pub fn spawn(
+pub fn spawn<T: 'static + Send>(
     name: String,
     display: Connection,
-    rx_chan: Channel<Command>,
+    rx_chan: Channel<Command<T>>,
     worker_replier: Sender<Result<(Vec<u8>, MimeType)>>,
 ) -> Option<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
@@ -28,19 +29,24 @@ pub fn spawn(
 }
 
 /// Clipboard worker thread command.
-pub enum Command {
+pub enum Command<T> {
     /// Loads data for the first available mime type in the provided list.
     Load(Cow<'static, [MimeType]>, SelectionTarget),
     /// Store Data with the given mime types.
     Store(Box<dyn AsMimeTypes + Send>, SelectionTarget),
+    #[cfg(feature = "dnd")]
+    /// Init DnD
+    InitDnD(Box<dyn crate::dnd::Sender<T> + Send>),
     /// Shutdown the worker.
     Exit,
+    /// Phantom data
+    Phantom(PhantomData<T>),
 }
 
 /// Handle clipboard requests.
-fn worker_impl(
+fn worker_impl<T: 'static>(
     connection: Connection,
-    rx_chan: Channel<Command>,
+    rx_chan: Channel<Command<T>>,
     reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
 ) {
     let (globals, event_queue) = match registry_queue_init(&connection) {
@@ -48,7 +54,7 @@ fn worker_impl(
         Err(_) => return,
     };
 
-    let mut event_loop = EventLoop::<State>::try_new().unwrap();
+    let mut event_loop = EventLoop::<State<T>>::try_new().unwrap();
     let loop_handle = event_loop.handle();
 
     let mut state = match State::new(&globals, &event_queue.handle(), loop_handle.clone(), reply_tx)
@@ -89,6 +95,11 @@ fn worker_impl(
                             "requested selection is not supported",
                         )));
                     },
+                    #[cfg(feature = "dnd")]
+                    Command::InitDnD(sender) => {
+                        state.sender = Some(sender);
+                    },
+                    Command::Phantom(_) => unreachable!(),
                 }
             }
         })

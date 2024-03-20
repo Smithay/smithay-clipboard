@@ -13,6 +13,8 @@ use sctk::reexports::calloop::channel::{self, Sender};
 use sctk::reexports::client::backend::Backend;
 use sctk::reexports::client::Connection;
 
+#[cfg(feature = "dnd")]
+pub mod dnd;
 pub mod mime;
 mod state;
 mod text;
@@ -22,14 +24,17 @@ use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
 use state::SelectionTarget;
 use text::Text;
 
+pub type SimpleClipboard = Clipboard<()>;
+
 /// Access to a Wayland clipboard.
-pub struct Clipboard {
-    request_sender: Sender<worker::Command>,
+pub struct Clipboard<T> {
+    request_sender: Sender<worker::Command<T>>,
     request_receiver: Receiver<Result<(Vec<u8>, MimeType)>>,
     clipboard_thread: Option<std::thread::JoinHandle<()>>,
+    connection: Connection,
 }
 
-impl Clipboard {
+impl<T: 'static + Send> Clipboard<T> {
     /// Creates new clipboard which will be running on its own thread with its
     /// own event queue to handle clipboard requests.
     ///
@@ -47,16 +52,17 @@ impl Clipboard {
         let (clipboard_reply_sender, request_receiver) = mpsc::channel();
 
         let name = String::from("smithay-clipboard");
-        let clipboard_thread = worker::spawn(name, connection, rx_chan, clipboard_reply_sender);
+        let clipboard_thread =
+            worker::spawn(name, connection.clone(), rx_chan, clipboard_reply_sender);
 
-        Self { request_receiver, request_sender, clipboard_thread }
+        Self { request_receiver, request_sender, clipboard_thread, connection }
     }
 
     /// Load custom clipboard data.
     ///
     /// Load the requested type from a clipboard on the last observed seat.
-    pub fn load<T: AllowedMimeTypes + 'static>(&self) -> Result<T> {
-        self.load_inner(SelectionTarget::Clipboard, T::allowed())
+    pub fn load<D: AllowedMimeTypes + 'static>(&self) -> Result<D> {
+        self.load_inner(SelectionTarget::Clipboard, D::allowed())
     }
 
     /// Load clipboard data.
@@ -70,8 +76,8 @@ impl Clipboard {
     ///
     /// Load the requested type from a primary clipboard on the last observed
     /// seat.
-    pub fn load_primary<T: AllowedMimeTypes + 'static>(&self) -> Result<T> {
-        self.load_inner(SelectionTarget::Primary, T::allowed())
+    pub fn load_primary<D: AllowedMimeTypes + 'static>(&self) -> Result<D> {
+        self.load_inner(SelectionTarget::Primary, D::allowed())
     }
 
     /// Load primary clipboard data.
@@ -104,14 +110,14 @@ impl Clipboard {
     /// Store custom data to a clipboard.
     ///
     /// Stores data of the provided type to a clipboard on a last observed seat.
-    pub fn store<T: AsMimeTypes + Send + 'static>(&self, data: T) {
+    pub fn store<D: AsMimeTypes + Send + 'static>(&self, data: D) {
         self.store_inner(data, SelectionTarget::Clipboard);
     }
 
     /// Store to a clipboard.
     ///
     /// Stores to a clipboard on a last observed seat.
-    pub fn store_text<T: Into<String>>(&self, text: T) {
+    pub fn store_text<D: Into<String>>(&self, text: D) {
         self.store(Text(text.into()));
     }
 
@@ -119,27 +125,27 @@ impl Clipboard {
     ///
     /// Stores data of the provided type to a primary clipboard on a last
     /// observed seat.
-    pub fn store_primary<T: AsMimeTypes + Send + 'static>(&self, data: T) {
+    pub fn store_primary<D: AsMimeTypes + Send + 'static>(&self, data: D) {
         self.store_inner(data, SelectionTarget::Primary);
     }
 
     /// Store to a primary clipboard.
     ///
     /// Stores to a primary clipboard on a last observed seat.
-    pub fn store_primary_text<T: Into<String>>(&self, text: T) {
+    pub fn store_primary_text<D: Into<String>>(&self, text: D) {
         self.store_primary(Text(text.into()));
     }
 
-    fn load_inner<T: TryFrom<(Vec<u8>, MimeType)> + 'static>(
+    fn load_inner<D: TryFrom<(Vec<u8>, MimeType)> + 'static>(
         &self,
         target: SelectionTarget,
         allowed: impl Into<Cow<'static, [MimeType]>>,
-    ) -> Result<T> {
+    ) -> Result<D> {
         let _ = self.request_sender.send(worker::Command::Load(allowed.into(), target));
 
         match self.request_receiver.recv() {
             Ok(res) => res.and_then(|(data, mime)| {
-                T::try_from((data, mime)).map_err(|_| {
+                D::try_from((data, mime)).map_err(|_| {
                     std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "Failed to load data of the requested type.",
@@ -152,13 +158,13 @@ impl Clipboard {
         }
     }
 
-    fn store_inner<T: AsMimeTypes + Send + 'static>(&self, data: T, target: SelectionTarget) {
+    fn store_inner<D: AsMimeTypes + Send + 'static>(&self, data: D, target: SelectionTarget) {
         let request = worker::Command::Store(Box::new(data), target);
         let _ = self.request_sender.send(request);
     }
 }
 
-impl Drop for Clipboard {
+impl<T> Drop for Clipboard<T> {
     fn drop(&mut self) {
         // Shutdown smithay-clipboard.
         let _ = self.request_sender.send(worker::Command::Exit);

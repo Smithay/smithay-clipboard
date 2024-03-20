@@ -22,5 +22,6 @@ thiserror = "1.0.57"
 url = "2.5.0"
 
 [features]
-default = ["dlopen"]
+default = ["dlopen", "dnd"]
+dnd = []
 dlopen = ["wayland-backend/dlopen" ]

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::marker::PhantomData;
 use std::mem;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::rc::Rc;
@@ -39,7 +40,7 @@ use wayland_backend::client::ObjectId;
 use crate::mime::{AsMimeTypes, MimeType};
 use crate::text::Text;
 
-pub struct State {
+pub struct State<T> {
     pub primary_selection_manager_state: Option<PrimarySelectionManagerState>,
     pub data_device_manager_state: Option<DataDeviceManagerState>,
     pub reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
@@ -62,9 +63,12 @@ pub struct State {
     data_sources: Vec<CopyPasteSource>,
     data_selection_content: Box<dyn AsMimeTypes>,
     data_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
+    #[cfg(feature = "dnd")]
+    pub(crate) sender: Option<Box<dyn crate::dnd::Sender<T>>>,
+    _phantom: PhantomData<T>,
 }
 
-impl State {
+impl<T: 'static> State<T> {
     #[must_use]
     pub fn new(
         globals: &GlobalList,
@@ -105,6 +109,9 @@ impl State {
             seats,
             primary_selection_mime_types: Rc::new(Default::default()),
             data_selection_mime_types: Rc::new(Default::default()),
+            #[cfg(feature = "dnd")]
+            sender: None,
+            _phantom: PhantomData,
         })
     }
 
@@ -281,7 +288,7 @@ impl State {
     }
 }
 
-impl SeatHandler for State {
+impl<T: 'static> SeatHandler for State<T> {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
@@ -364,7 +371,7 @@ impl SeatHandler for State {
     }
 }
 
-impl PointerHandler for State {
+impl<T: 'static> PointerHandler for State<T> {
     fn pointer_frame(
         &mut self,
         _: &Connection,
@@ -398,7 +405,7 @@ impl PointerHandler for State {
     }
 }
 
-impl DataDeviceHandler for State {
+impl<T: 'static> DataDeviceHandler for State<T> {
     fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
@@ -411,7 +418,7 @@ impl DataDeviceHandler for State {
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 }
 
-impl DataSourceHandler for State {
+impl<T: 'static> DataSourceHandler for State<T> {
     fn send_request(
         &mut self,
         _: &Connection,
@@ -443,7 +450,7 @@ impl DataSourceHandler for State {
     fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 }
 
-impl DataOfferHandler for State {
+impl<T: 'static> DataOfferHandler for State<T> {
     fn source_actions(
         &mut self,
         _: &Connection,
@@ -463,7 +470,7 @@ impl DataOfferHandler for State {
     }
 }
 
-impl ProvidesRegistryState for State {
+impl<T: 'static> ProvidesRegistryState for State<T> {
     registry_handlers![SeatState];
 
     fn registry(&mut self) -> &mut RegistryState {
@@ -471,7 +478,7 @@ impl ProvidesRegistryState for State {
     }
 }
 
-impl PrimarySelectionDeviceHandler for State {
+impl<T: 'static> PrimarySelectionDeviceHandler for State<T> {
     fn selection(
         &mut self,
         _: &Connection,
@@ -481,7 +488,7 @@ impl PrimarySelectionDeviceHandler for State {
     }
 }
 
-impl PrimarySelectionSourceHandler for State {
+impl<T: 'static> PrimarySelectionSourceHandler for State<T> {
     fn send_request(
         &mut self,
         _: &Connection,
@@ -503,14 +510,14 @@ impl PrimarySelectionSourceHandler for State {
     }
 }
 
-impl Dispatch<WlKeyboard, ObjectId, State> for State {
+impl<T: 'static> Dispatch<WlKeyboard, ObjectId, State<T>> for State<T> {
     fn event(
-        state: &mut State,
+        state: &mut State<T>,
         _: &WlKeyboard,
         event: <WlKeyboard as sctk::reexports::client::Proxy>::Event,
         data: &ObjectId,
         _: &Connection,
-        _: &QueueHandle<State>,
+        _: &QueueHandle<State<T>>,
     ) {
         use sctk::reexports::client::protocol::wl_keyboard::Event as WlKeyboardEvent;
         let seat_state = match state.seats.get_mut(data) {
@@ -536,11 +543,11 @@ impl Dispatch<WlKeyboard, ObjectId, State> for State {
     }
 }
 
-delegate_seat!(State);
-delegate_pointer!(State);
-delegate_data_device!(State);
-delegate_primary_selection!(State);
-delegate_registry!(State);
+delegate_seat!(@<T: 'static> State<T>);
+delegate_pointer!(@<T: 'static> State<T>);
+delegate_data_device!(@<T: 'static> State<T>);
+delegate_primary_selection!(@<T: 'static> State<T>);
+delegate_registry!(@<T: 'static> State<T>);
 
 #[derive(Debug, Clone, Copy)]
 pub enum SelectionTarget {

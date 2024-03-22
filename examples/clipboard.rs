@@ -78,7 +78,10 @@ fn main() {
         DndDestinationRectangle {
             id: 0,
             rectangle: Rectangle { x: 0., y: 0., width: 256., height: 256. },
-            mime_types: ALLOWED_TEXT_MIME_TYPES.iter().map(|m| Cow::from(m.to_string())).collect(),
+            mime_types: ALLOWED_TEXT_MIME_TYPES
+                .iter()
+                .map(|m| MimeType::from(Cow::from(m.to_string())))
+                .collect(),
             actions: DndAction::all(),
             preferred: DndAction::Copy,
         },

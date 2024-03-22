@@ -27,7 +27,7 @@ pub(crate) struct DndState<T> {
     active_surface: Option<(DndSurface<T>, Option<DndDestinationRectangle>)>,
     source_actions: DndAction,
     selected_action: DndAction,
-    selected_mime: Option<String>,
+    selected_mime: Option<MimeType>,
     pub(crate) source_content: Box<dyn AsMimeTypes>,
     pub(crate) source_mime_types: Rc<Cow<'static, [MimeType]>>,
 }
@@ -82,12 +82,9 @@ where
                     });
                     let mime = dnd_state.as_ref().and_then(|dnd_state| {
                         r.mime_types.iter().find(|m| {
-                            dnd_state.with_mime_types(|mimes| mimes.iter().any(|a| &a == m))
+                            dnd_state.with_mime_types(|mimes| mimes.iter().any(|a| a == m.as_ref()))
                         })
                     });
-
-                    dbg!(actions);
-                    dbg!(mime);
 
                     (r.rectangle.contains(x, y)
                         && (r.mime_types.is_empty() || mime.is_some())
@@ -118,7 +115,7 @@ where
                     (actions, mime, dnd_state.as_ref())
                 {
                     dnd_state.set_actions(action, preferred_action);
-                    self.dnd_state.selected_mime = Some(mime_type.to_string());
+                    self.dnd_state.selected_mime = Some(mime_type.clone());
                     dnd_state.accept_mime_type(dnd_state.serial, Some(mime_type.to_string()))
                 }
                 (s.clone(), Some(dest))
@@ -162,9 +159,9 @@ where
         };
 
         dnd_state.set_actions(self.dnd_state.selected_action, self.dnd_state.selected_action);
-        dnd_state.accept_mime_type(dnd_state.serial, Some(mime.clone()));
+        dnd_state.accept_mime_type(dnd_state.serial, Some(mime.to_string()));
 
-        _ = self.load_dnd(MimeType::Other(mime.into()));
+        _ = self.load_dnd(mime);
     }
 
     pub(crate) fn offer_enter(
@@ -267,9 +264,6 @@ where
             .get_mut(latest)
             .ok_or_else(|| Error::new(ErrorKind::Other, "active seat lost"))?;
 
-        if !seat.has_focus {
-            return Err(Error::new(ErrorKind::Other, "client doesn't have focus"));
-        }
         let offer = seat
             .data_device
             .as_ref()

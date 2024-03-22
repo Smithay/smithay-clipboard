@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::ffi::c_void;
 use std::fmt::Debug;
 use std::sync::mpsc::SendError;
@@ -9,7 +8,7 @@ use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::{Connection, Proxy};
 use wayland_backend::client::{InvalidId, ObjectId};
 
-use crate::mime::AsMimeTypes;
+use crate::mime::{AsMimeTypes, MimeType};
 use crate::Clipboard;
 
 pub mod state;
@@ -118,7 +117,7 @@ pub struct DndDestinationRectangle {
     /// The rectangle representing this destination.
     pub rectangle: Rectangle,
     /// Accepted mime types in this rectangle
-    pub mime_types: Vec<Cow<'static, str>>,
+    pub mime_types: Vec<MimeType>,
     /// Accepted actions in this rectangle
     pub actions: DndAction,
     /// Prefered action in this rectangle

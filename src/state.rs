@@ -9,7 +9,7 @@ use std::sync::mpsc::Sender;
 
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferError, DataOfferHandler, DragOffer};
-use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler, DragSource};
+use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
 use sctk::primary_selection::selection::{PrimarySelectionSource, PrimarySelectionSourceHandler};
@@ -39,7 +39,7 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 use wayland_backend::client::ObjectId;
 
 use crate::dnd::state::DndState;
-use crate::dnd::{DndDestinationRectangle, DndSurface};
+use crate::dnd::DndSurface;
 use crate::mime::{AsMimeTypes, MimeType};
 use crate::text::Text;
 
@@ -218,7 +218,7 @@ impl<T: 'static + Clone> State<T> {
                     .as_ref()
                     .and_then(|d| d.data().drag_offer())
                     .ok_or_else(|| Error::new(ErrorKind::Other, "offer does not exist."))?;
-                let Some(mime) = allowed_mime_types.get(0) else {
+                let Some(mime) = allowed_mime_types.first() else {
                     return Err(Error::new(
                         ErrorKind::NotFound,
                         "supported mime-type is not found",

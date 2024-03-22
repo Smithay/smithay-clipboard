@@ -457,7 +457,7 @@ impl Uri {
 }
 
 impl AsMimeTypes for Uri {
-    fn available<'a>(&'a self) -> Cow<'static, [MimeType]> {
+    fn available(&self) -> Cow<'static, [MimeType]> {
         Self::allowed()
     }
 

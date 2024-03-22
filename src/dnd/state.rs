@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read};
 use std::mem;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::AsRawFd;
 use std::rc::Rc;
 
 use sctk::data_device_manager::data_offer::DragOffer;
@@ -15,7 +15,7 @@ use sctk::reexports::client::Proxy;
 use wayland_backend::client::ObjectId;
 
 use crate::mime::{AsMimeTypes, MimeType};
-use crate::state::{set_non_blocking, State, Target};
+use crate::state::{set_non_blocking, State};
 use crate::text::Text;
 
 use super::{DndDestinationRectangle, DndEvent, DndRequest, DndSurface, OfferEvent};

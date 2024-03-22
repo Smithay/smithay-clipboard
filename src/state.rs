@@ -9,11 +9,12 @@ use std::sync::mpsc::Sender;
 
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferError, DataOfferHandler, DragOffer};
-use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
+use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler, DragSource};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
 use sctk::primary_selection::selection::{PrimarySelectionSource, PrimarySelectionSourceHandler};
 use sctk::primary_selection::PrimarySelectionManagerState;
+use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
 use sctk::seat::{Capability, SeatHandler, SeatState};
@@ -37,6 +38,8 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 };
 use wayland_backend::client::ObjectId;
 
+use crate::dnd::state::DndState;
+use crate::dnd::{DndDestinationRectangle, DndSurface};
 use crate::mime::{AsMimeTypes, MimeType};
 use crate::text::Text;
 
@@ -49,11 +52,11 @@ pub struct State<T> {
     registry_state: RegistryState,
     seat_state: SeatState,
 
-    seats: HashMap<ObjectId, ClipboardSeatState>,
+    pub(crate) seats: HashMap<ObjectId, ClipboardSeatState>,
     /// The latest seat which got an event.
-    latest_seat: Option<ObjectId>,
+    pub(crate) latest_seat: Option<ObjectId>,
 
-    loop_handle: LoopHandle<'static, Self>,
+    pub(crate) loop_handle: LoopHandle<'static, Self>,
     queue_handle: QueueHandle<Self>,
 
     primary_sources: Vec<PrimarySelectionSource>,
@@ -64,11 +67,11 @@ pub struct State<T> {
     data_selection_content: Box<dyn AsMimeTypes>,
     data_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
     #[cfg(feature = "dnd")]
-    pub(crate) sender: Option<Box<dyn crate::dnd::Sender<T>>>,
+    pub(crate) dnd_state: crate::dnd::state::DndState<T>,
     _phantom: PhantomData<T>,
 }
 
-impl<T: 'static> State<T> {
+impl<T: 'static + Clone> State<T> {
     #[must_use]
     pub fn new(
         globals: &GlobalList,
@@ -110,7 +113,7 @@ impl<T: 'static> State<T> {
             primary_selection_mime_types: Rc::new(Default::default()),
             data_selection_mime_types: Rc::new(Default::default()),
             #[cfg(feature = "dnd")]
-            sender: None,
+            dnd_state: DndState::default(),
             _phantom: PhantomData,
         })
     }
@@ -118,11 +121,7 @@ impl<T: 'static> State<T> {
     /// Store selection for the given target.
     ///
     /// Selection source is only created when `Some(())` is returned.
-    pub fn store_selection(
-        &mut self,
-        ty: SelectionTarget,
-        contents: Box<dyn AsMimeTypes>,
-    ) -> Option<()> {
+    pub fn store_selection(&mut self, ty: Target, contents: Box<dyn AsMimeTypes>) -> Option<()> {
         let latest = self.latest_seat.as_ref()?;
         let seat = self.seats.get_mut(latest)?;
 
@@ -131,7 +130,7 @@ impl<T: 'static> State<T> {
         }
 
         match ty {
-            SelectionTarget::Clipboard => {
+            Target::Clipboard => {
                 let mgr = self.data_device_manager_state.as_ref()?;
                 let mime_types = contents.available();
                 self.data_selection_content = contents;
@@ -140,7 +139,7 @@ impl<T: 'static> State<T> {
                 source.set_selection(seat.data_device.as_ref().unwrap(), seat.latest_serial);
                 self.data_sources.push(source);
             },
-            SelectionTarget::Primary => {
+            Target::Primary => {
                 let mgr = self.primary_selection_manager_state.as_ref()?;
                 let mime_types = contents.available();
                 self.primary_selection_content = contents;
@@ -149,17 +148,17 @@ impl<T: 'static> State<T> {
                 source.set_selection(seat.primary_device.as_ref().unwrap(), seat.latest_serial);
                 self.primary_sources.push(source);
             },
+            #[cfg(feature = "dnd")]
+            Target::DnD => {
+                unreachable!()
+            },
         }
 
         Some(())
     }
 
-    /// Load selection for the given target.
-    pub fn load_selection(
-        &mut self,
-        ty: SelectionTarget,
-        allowed_mime_types: &[MimeType],
-    ) -> Result<()> {
+    /// Load data for the given target.
+    pub fn load(&mut self, ty: Target, allowed_mime_types: &[MimeType]) -> Result<()> {
         let latest = self
             .latest_seat
             .as_ref()
@@ -174,7 +173,7 @@ impl<T: 'static> State<T> {
         }
 
         let (read_pipe, mut mime_type) = match ty {
-            SelectionTarget::Clipboard => {
+            Target::Clipboard => {
                 let selection = seat
                     .data_device
                     .as_ref()
@@ -197,7 +196,7 @@ impl<T: 'static> State<T> {
                     mime_type,
                 )
             },
-            SelectionTarget::Primary => {
+            Target::Primary => {
                 let selection = seat
                     .primary_device
                     .as_ref()
@@ -211,6 +210,21 @@ impl<T: 'static> State<T> {
                     })?;
 
                 (selection.receive(mime_type.to_string())?, mime_type)
+            },
+            #[cfg(feature = "dnd")]
+            Target::DnD => {
+                let offer = seat
+                    .data_device
+                    .as_ref()
+                    .and_then(|d| d.data().drag_offer())
+                    .ok_or_else(|| Error::new(ErrorKind::Other, "offer does not exist."))?;
+                let Some(mime) = allowed_mime_types.get(0) else {
+                    return Err(Error::new(
+                        ErrorKind::NotFound,
+                        "supported mime-type is not found",
+                    ));
+                };
+                (offer.receive(mime.to_string())?, mime.clone())
             },
         };
 
@@ -244,10 +258,12 @@ impl<T: 'static> State<T> {
         Ok(())
     }
 
-    fn send_request(&mut self, ty: SelectionTarget, write_pipe: WritePipe, mime: String) {
+    fn send_request(&mut self, ty: Target, write_pipe: WritePipe, mime: String) {
         let Some(mime_type) = MimeType::find_allowed(&[mime], match ty {
-            SelectionTarget::Clipboard => &self.data_selection_mime_types,
-            SelectionTarget::Primary => &self.primary_selection_mime_types,
+            Target::Clipboard => &self.data_selection_mime_types,
+            Target::Primary => &self.primary_selection_mime_types,
+            #[cfg(feature = "dnd")]
+            Target::DnD => &self.dnd_state.source_mime_types,
         }) else {
             return;
         };
@@ -262,8 +278,10 @@ impl<T: 'static> State<T> {
         // Don't access the content on the state directly, since it could change during
         // the send.
         let contents = match ty {
-            SelectionTarget::Clipboard => self.data_selection_content.as_bytes(&mime_type),
-            SelectionTarget::Primary => self.primary_selection_content.as_bytes(&mime_type),
+            Target::Clipboard => self.data_selection_content.as_bytes(&mime_type),
+            Target::Primary => self.primary_selection_content.as_bytes(&mime_type),
+            #[cfg(feature = "dnd")]
+            Target::DnD => self.dnd_state.source_content.as_bytes(&mime_type),
         };
 
         let Some(contents) = contents else {
@@ -288,7 +306,7 @@ impl<T: 'static> State<T> {
     }
 }
 
-impl<T: 'static> SeatHandler for State<T> {
+impl<T: 'static + Clone> SeatHandler for State<T> {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
@@ -371,7 +389,7 @@ impl<T: 'static> SeatHandler for State<T> {
     }
 }
 
-impl<T: 'static> PointerHandler for State<T> {
+impl<T: 'static + Clone> PointerHandler for State<T> {
     fn pointer_frame(
         &mut self,
         _: &Connection,
@@ -405,20 +423,50 @@ impl<T: 'static> PointerHandler for State<T> {
     }
 }
 
-impl<T: 'static> DataDeviceHandler for State<T> {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+impl<T: 'static + Clone> DataDeviceHandler for State<T>
+where
+    DndSurface<T>: Clone,
+{
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        wl_data_device: &WlDataDevice,
+        x: f64,
+        y: f64,
+        surface: &WlSurface,
+    ) {
+        #[cfg(feature = "dnd")]
+        self.offer_enter(x, y, surface, wl_data_device);
+    }
 
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        #[cfg(feature = "dnd")]
+        self.offer_leave();
+    }
 
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn motion(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        wl_data_device: &WlDataDevice,
+        x: f64,
+        y: f64,
+    ) {
+        #[cfg(feature = "dnd")]
+        self.offer_motion(x, y, wl_data_device);
+    }
 
-    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, d: &WlDataDevice) {
+        #[cfg(feature = "dnd")]
+        self.offer_drop(d)
+    }
 
     // The selection is finished and ready to be used.
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 }
 
-impl<T: 'static> DataSourceHandler for State<T> {
+impl<T: 'static + Clone> DataSourceHandler for State<T> {
     fn send_request(
         &mut self,
         _: &Connection,
@@ -427,7 +475,7 @@ impl<T: 'static> DataSourceHandler for State<T> {
         mime: String,
         write_pipe: WritePipe,
     ) {
-        self.send_request(SelectionTarget::Clipboard, write_pipe, mime)
+        self.send_request(Target::Clipboard, write_pipe, mime)
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, deleted: &WlDataSource) {
@@ -450,7 +498,7 @@ impl<T: 'static> DataSourceHandler for State<T> {
     fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 }
 
-impl<T: 'static> DataOfferHandler for State<T> {
+impl<T: 'static + Clone> DataOfferHandler for State<T> {
     fn source_actions(
         &mut self,
         _: &Connection,
@@ -465,12 +513,14 @@ impl<T: 'static> DataOfferHandler for State<T> {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &mut DragOffer,
-        _: DndAction,
+        action: DndAction,
     ) {
+        #[cfg(feature = "dnd")]
+        self.dnd_state.selected_action(action);
     }
 }
 
-impl<T: 'static> ProvidesRegistryState for State<T> {
+impl<T: 'static + Clone> ProvidesRegistryState for State<T> {
     registry_handlers![SeatState];
 
     fn registry(&mut self) -> &mut RegistryState {
@@ -478,7 +528,7 @@ impl<T: 'static> ProvidesRegistryState for State<T> {
     }
 }
 
-impl<T: 'static> PrimarySelectionDeviceHandler for State<T> {
+impl<T: 'static + Clone> PrimarySelectionDeviceHandler for State<T> {
     fn selection(
         &mut self,
         _: &Connection,
@@ -488,7 +538,7 @@ impl<T: 'static> PrimarySelectionDeviceHandler for State<T> {
     }
 }
 
-impl<T: 'static> PrimarySelectionSourceHandler for State<T> {
+impl<T: 'static + Clone> PrimarySelectionSourceHandler for State<T> {
     fn send_request(
         &mut self,
         _: &Connection,
@@ -497,7 +547,7 @@ impl<T: 'static> PrimarySelectionSourceHandler for State<T> {
         mime: String,
         write_pipe: WritePipe,
     ) {
-        self.send_request(SelectionTarget::Primary, write_pipe, mime);
+        self.send_request(Target::Primary, write_pipe, mime);
     }
 
     fn cancelled(
@@ -510,7 +560,7 @@ impl<T: 'static> PrimarySelectionSourceHandler for State<T> {
     }
 }
 
-impl<T: 'static> Dispatch<WlKeyboard, ObjectId, State<T>> for State<T> {
+impl<T: 'static + Clone> Dispatch<WlKeyboard, ObjectId, State<T>> for State<T> {
     fn event(
         state: &mut State<T>,
         _: &WlKeyboard,
@@ -543,27 +593,30 @@ impl<T: 'static> Dispatch<WlKeyboard, ObjectId, State<T>> for State<T> {
     }
 }
 
-delegate_seat!(@<T: 'static> State<T>);
-delegate_pointer!(@<T: 'static> State<T>);
-delegate_data_device!(@<T: 'static> State<T>);
-delegate_primary_selection!(@<T: 'static> State<T>);
-delegate_registry!(@<T: 'static> State<T>);
+delegate_seat!(@<T: 'static + Clone> State<T>);
+delegate_pointer!(@<T: 'static + Clone> State<T>);
+delegate_data_device!(@<T: 'static + Clone> State<T>);
+delegate_primary_selection!(@<T: 'static + Clone> State<T>);
+delegate_registry!(@<T: 'static + Clone> State<T>);
 
 #[derive(Debug, Clone, Copy)]
-pub enum SelectionTarget {
+pub enum Target {
     /// The target is clipboard selection.
     Clipboard,
     /// The target is primary selection.
     Primary,
+    #[cfg(feature = "dnd")]
+    /// The targe is a DnD offer.
+    DnD,
 }
 
 #[derive(Debug, Default)]
-struct ClipboardSeatState {
+pub(crate) struct ClipboardSeatState {
     keyboard: Option<WlKeyboard>,
     pointer: Option<WlPointer>,
-    data_device: Option<DataDevice>,
+    pub(crate) data_device: Option<DataDevice>,
     primary_device: Option<PrimarySelectionDevice>,
-    has_focus: bool,
+    pub(crate) has_focus: bool,
 
     /// The latest serial used to set the selection content.
     latest_serial: u32,
@@ -585,7 +638,7 @@ impl Drop for ClipboardSeatState {
     }
 }
 
-unsafe fn set_non_blocking(raw_fd: RawFd) -> std::io::Result<()> {
+pub(crate) unsafe fn set_non_blocking(raw_fd: RawFd) -> std::io::Result<()> {
     let flags = libc::fcntl(raw_fd, libc::F_GETFL);
 
     if flags < 0 {

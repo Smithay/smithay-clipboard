@@ -11,6 +11,7 @@ use sctk::output::{OutputHandler, OutputState};
 use sctk::reexports::calloop::{EventLoop, LoopHandle};
 use sctk::reexports::calloop_wayland_source::WaylandSource;
 use sctk::reexports::client::globals::registry_queue_init;
+use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
@@ -26,7 +27,8 @@ use sctk::{
     delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
     delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
-use smithay_clipboard::mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
+use smithay_clipboard::dnd::{DndDestinationRectangle, Rectangle};
+use smithay_clipboard::mime::{AllowedMimeTypes, AsMimeTypes, MimeType, ALLOWED_TEXT_MIME_TYPES};
 use smithay_clipboard::{Clipboard, SimpleClipboard};
 use thiserror::Error;
 use url::Url;
@@ -66,11 +68,21 @@ fn main() {
 
     let pool = SlotPool::new(MIN_DIM_SIZE * MIN_DIM_SIZE * 4, &shm).expect("Failed to create pool");
     let (tx, rx) = sctk::reexports::calloop::channel::sync_channel(10);
-    clipboard.init_dnd(Box::new(tx));
+    clipboard.init_dnd(Box::new(tx)).expect("Failed to set up DnD");
 
-    event_loop.handle().insert_source(rx, |event, _, state| {
+    _ = event_loop.handle().insert_source(rx, |event, _, _state| {
         dbg!(event);
     });
+
+    clipboard.register_dnd_destination(window.wl_surface().clone(), vec![
+        DndDestinationRectangle {
+            id: 0,
+            rectangle: Rectangle { x: 0., y: 0., width: 256., height: 256. },
+            mime_types: ALLOWED_TEXT_MIME_TYPES.iter().map(|m| Cow::from(m.to_string())).collect(),
+            actions: DndAction::all(),
+            preferred: DndAction::Copy,
+        },
+    ]);
 
     let mut simple_window = SimpleWindow {
         registry_state: RegistryState::new(&globals),
@@ -367,6 +379,7 @@ impl KeyboardHandler for SimpleWindow {
         _: &wl_keyboard::WlKeyboard,
         _serial: u32,
         _modifiers: Modifiers,
+        _: u32,
     ) {
     }
 }

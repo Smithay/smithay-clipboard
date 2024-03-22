@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 
 use sctk::reexports::calloop::channel::{self, Sender};
 use sctk::reexports::client::backend::Backend;
+use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::Connection;
 
 #[cfg(feature = "dnd")]
@@ -24,7 +25,7 @@ use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
 use state::SelectionTarget;
 use text::Text;
 
-pub type SimpleClipboard = Clipboard<()>;
+pub type SimpleClipboard = Clipboard<WlSurface>;
 
 /// Access to a Wayland clipboard.
 pub struct Clipboard<T> {
@@ -34,7 +35,7 @@ pub struct Clipboard<T> {
     connection: Connection,
 }
 
-impl<T: 'static + Send> Clipboard<T> {
+impl<T: 'static + Send + Clone> Clipboard<T> {
     /// Creates new clipboard which will be running on its own thread with its
     /// own event queue to handle clipboard requests.
     ///
@@ -62,7 +63,7 @@ impl<T: 'static + Send> Clipboard<T> {
     ///
     /// Load the requested type from a clipboard on the last observed seat.
     pub fn load<D: AllowedMimeTypes + 'static>(&self) -> Result<D> {
-        self.load_inner(SelectionTarget::Clipboard, D::allowed())
+        self.load_inner(Target::Clipboard, D::allowed())
     }
 
     /// Load clipboard data.
@@ -77,7 +78,7 @@ impl<T: 'static + Send> Clipboard<T> {
     /// Load the requested type from a primary clipboard on the last observed
     /// seat.
     pub fn load_primary<D: AllowedMimeTypes + 'static>(&self) -> Result<D> {
-        self.load_inner(SelectionTarget::Primary, D::allowed())
+        self.load_inner(Target::Primary, D::allowed())
     }
 
     /// Load primary clipboard data.
@@ -94,7 +95,7 @@ impl<T: 'static + Send> Clipboard<T> {
         &self,
         allowed: impl Into<Cow<'static, [MimeType]>>,
     ) -> Result<(Vec<u8>, MimeType)> {
-        self.load_inner(SelectionTarget::Clipboard, allowed)
+        self.load_inner(Target::Clipboard, allowed)
     }
 
     /// Load raw primary clipboard data.
@@ -104,14 +105,14 @@ impl<T: 'static + Send> Clipboard<T> {
         &self,
         allowed: impl Into<Cow<'static, [MimeType]>>,
     ) -> Result<(Vec<u8>, MimeType)> {
-        self.load_inner(SelectionTarget::Primary, allowed)
+        self.load_inner(Target::Primary, allowed)
     }
 
     /// Store custom data to a clipboard.
     ///
     /// Stores data of the provided type to a clipboard on a last observed seat.
     pub fn store<D: AsMimeTypes + Send + 'static>(&self, data: D) {
-        self.store_inner(data, SelectionTarget::Clipboard);
+        self.store_inner(data, Target::Clipboard);
     }
 
     /// Store to a clipboard.
@@ -126,7 +127,7 @@ impl<T: 'static + Send> Clipboard<T> {
     /// Stores data of the provided type to a primary clipboard on a last
     /// observed seat.
     pub fn store_primary<D: AsMimeTypes + Send + 'static>(&self, data: D) {
-        self.store_inner(data, SelectionTarget::Primary);
+        self.store_inner(data, Target::Primary);
     }
 
     /// Store to a primary clipboard.
@@ -138,7 +139,7 @@ impl<T: 'static + Send> Clipboard<T> {
 
     fn load_inner<D: TryFrom<(Vec<u8>, MimeType)> + 'static>(
         &self,
-        target: SelectionTarget,
+        target: Target,
         allowed: impl Into<Cow<'static, [MimeType]>>,
     ) -> Result<D> {
         let _ = self.request_sender.send(worker::Command::Load(allowed.into(), target));
@@ -158,7 +159,7 @@ impl<T: 'static + Send> Clipboard<T> {
         }
     }
 
-    fn store_inner<D: AsMimeTypes + Send + 'static>(&self, data: D, target: SelectionTarget) {
+    fn store_inner<D: AsMimeTypes + Send + 'static>(&self, data: D, target: Target) {
         let request = worker::Command::Store(Box::new(data), target);
         let _ = self.request_sender.send(request);
     }

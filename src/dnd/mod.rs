@@ -1,16 +1,22 @@
+use std::borrow::Cow;
 use std::ffi::c_void;
 use std::fmt::Debug;
 use std::sync::mpsc::SendError;
 
 use sctk::reexports::calloop;
+use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::{Connection, Proxy};
 use wayland_backend::client::{InvalidId, ObjectId};
 
+use crate::mime::AsMimeTypes;
 use crate::Clipboard;
 
+pub mod state;
+
+#[derive(Clone)]
 pub struct DndSurface<T> {
-    pub surface: WlSurface,
+    pub(crate) surface: WlSurface,
     pub s: T,
 }
 
@@ -47,8 +53,99 @@ pub trait Sender<T> {
 }
 
 #[derive(Debug)]
+pub enum SourceEvent {
+    /// DnD operation ended.
+    Finished,
+    /// DnD Cancelled.
+    Cancelled,
+    /// DnD action chosen by the compositor.
+    Action(DndAction),
+    /// Mime accepted by destination.
+    /// If [`None`], no mime types are accepted.
+    Mime(Option<String>),
+    /// DnD Dropped. The operation is still ongoing until receiving a
+    /// [`Finished`] event.
+    Dropped,
+}
+
+#[derive(Debug)]
+pub enum OfferEvent<T> {
+    Enter {
+        x: f64,
+        y: f64,
+        mime_types: Vec<String>,
+        surface: T,
+    },
+    Motion {
+        x: f64,
+        y: f64,
+    },
+    /// The offer is no longer on a DnD destination.
+    LeaveDestination,
+    /// The offer has left the surface.
+    Leave,
+    /// An offer was dropped
+    Drop,
+    /// If the selected action is ASK, the user must be presented with a choice.
+    /// [`Clipboard::set_actions`] should then be called before data can be
+    /// requested and th DnD operation can be finished.
+    SelectedAction(DndAction),
+    Data {
+        data: Vec<u8>,
+        mime_type: String,
+    },
+}
+
+/// A rectangle with a logical location and size relative to a [`Surface`]
+#[derive(Debug, Default, Clone)]
+pub struct Rectangle {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Rectangle {
+    fn contains(&self, x: f64, y: f64) -> bool {
+        self.x <= x && self.x + self.width >= x && self.y <= y && self.y + self.height >= y
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DndDestinationRectangle {
+    /// A unique ID
+    pub id: u128,
+    /// The rectangle representing this destination.
+    pub rectangle: Rectangle,
+    /// Accepted mime types in this rectangle
+    pub mime_types: Vec<Cow<'static, str>>,
+    /// Accepted actions in this rectangle
+    pub actions: DndAction,
+    /// Prefered action in this rectangle
+    pub preferred: DndAction,
+}
+
+pub enum DndRequest<T> {
+    /// Init DnD
+    InitDnD(Box<dyn crate::dnd::Sender<T> + Send>),
+    /// Register a surface for receiving Dnd events.
+    Surface(DndSurface<T>, Vec<DndDestinationRectangle>),
+    /// Start a Dnd operation with the given source surface and data.
+    StartDnd {
+        source: DndSurface<T>,
+        icon: Option<DndSurface<T>>,
+        content: Box<dyn AsMimeTypes + Send>,
+    },
+    /// Set the DnD action chosen by the user.
+    SetAction(DndAction),
+}
+
+#[derive(Debug)]
 pub enum DndEvent<T> {
-    Test(T),
+    /// Dnd Offer event with the corresponding destination rectangle ID.
+    Offer(Option<u128>, OfferEvent<T>),
+    /// Dnd Source event.
+    Source(SourceEvent),
 }
 
 impl<T> Sender<T> for calloop::channel::Sender<DndEvent<T>> {
@@ -63,21 +160,44 @@ impl<T> Sender<T> for calloop::channel::SyncSender<DndEvent<T>> {
     }
 }
 
-impl<T> Clipboard<T> {
+impl<T: RawSurface> Clipboard<T> {
     /// Set up DnD operations for the Clipboard
     pub fn init_dnd(
         &self,
         tx: Box<dyn Sender<T> + Send>,
     ) -> Result<(), SendError<crate::worker::Command<T>>> {
-        self.request_sender.send(crate::worker::Command::InitDnD(tx))
+        self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::InitDnD(tx)))
     }
 
     /// Start a DnD operation on the given surface with some data
-    pub fn start_dnd<D: RawSurface>(&self, s: D) {
-        let s = DndSurface::new(s, &self.connection).unwrap();
-        dbg!(&s.surface);
+    pub fn start_dnd<D: AsMimeTypes + Send + 'static>(
+        &self,
+        source_surface: T,
+        icon_surface: Option<T>,
+        content: D,
+    ) {
+        let source = DndSurface::new(source_surface, &self.connection).unwrap();
+        let icon = icon_surface.map(|s| DndSurface::new(s, &self.connection).unwrap());
+        _ = self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::StartDnd {
+            source,
+            icon,
+            content: Box::new(content),
+        }));
     }
 
     /// End the current DnD operation, if there is one
     pub fn end_dnd() {}
+
+    /// Register a surface for receiving DnD offers
+    /// Rectangles should be provided in order of decreasing priority.
+    pub fn register_dnd_destination(&self, surface: T, rectangles: Vec<DndDestinationRectangle>) {
+        let s = DndSurface::new(surface, &self.connection).unwrap();
+
+        _ = self
+            .request_sender
+            .send(crate::worker::Command::DndRequest(DndRequest::Surface(s, rectangles)));
+    }
+
+    /// Set the final action after presenting the user with a choice
+    pub fn set_action(&self, action: DndAction) {}
 }

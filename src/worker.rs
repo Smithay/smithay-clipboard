@@ -9,12 +9,13 @@ use sctk::reexports::calloop_wayland_source::WaylandSource;
 use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::Connection;
 
+use crate::dnd::DndRequest;
 use crate::mime::{AsMimeTypes, MimeType};
-use crate::state::{SelectionTarget, State};
+use crate::state::{State, Target};
 
 /// Spawn a clipboard worker, which dispatches its own `EventQueue` and handles
 /// clipboard requests.
-pub fn spawn<T: 'static + Send>(
+pub fn spawn<T: 'static + Send + Clone>(
     name: String,
     display: Connection,
     rx_chan: Channel<Command<T>>,
@@ -31,12 +32,12 @@ pub fn spawn<T: 'static + Send>(
 /// Clipboard worker thread command.
 pub enum Command<T> {
     /// Loads data for the first available mime type in the provided list.
-    Load(Cow<'static, [MimeType]>, SelectionTarget),
+    Load(Cow<'static, [MimeType]>, Target),
     /// Store Data with the given mime types.
-    Store(Box<dyn AsMimeTypes + Send>, SelectionTarget),
+    Store(Box<dyn AsMimeTypes + Send>, Target),
     #[cfg(feature = "dnd")]
     /// Init DnD
-    InitDnD(Box<dyn crate::dnd::Sender<T> + Send>),
+    DndRequest(DndRequest<T>),
     /// Shutdown the worker.
     Exit,
     /// Phantom data
@@ -44,7 +45,7 @@ pub enum Command<T> {
 }
 
 /// Handle clipboard requests.
-fn worker_impl<T: 'static>(
+fn worker_impl<T: 'static + Clone>(
     connection: Connection,
     rx_chan: Channel<Command<T>>,
     reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
@@ -71,21 +72,17 @@ fn worker_impl<T: 'static>(
                     Command::Store(data, target) => {
                         state.store_selection(target, data);
                     },
-                    Command::Load(mime_types, SelectionTarget::Clipboard)
+                    Command::Load(mime_types, Target::Clipboard)
                         if state.data_device_manager_state.is_some() =>
                     {
-                        if let Err(err) =
-                            state.load_selection(SelectionTarget::Clipboard, &mime_types)
-                        {
+                        if let Err(err) = state.load(Target::Clipboard, &mime_types) {
                             let _ = state.reply_tx.send(Err(err));
                         }
                     },
-                    Command::Load(mime_types, SelectionTarget::Primary)
+                    Command::Load(mime_types, Target::Primary)
                         if state.primary_selection_manager_state.is_some() =>
                     {
-                        if let Err(err) =
-                            state.load_selection(SelectionTarget::Primary, &mime_types)
-                        {
+                        if let Err(err) = state.load(Target::Primary, &mime_types) {
                             let _ = state.reply_tx.send(Err(err));
                         }
                     },
@@ -96,8 +93,8 @@ fn worker_impl<T: 'static>(
                         )));
                     },
                     #[cfg(feature = "dnd")]
-                    Command::InitDnD(sender) => {
-                        state.sender = Some(sender);
+                    Command::DndRequest(r) => {
+                        state.handle_dnd_request(r);
                     },
                     Command::Phantom(_) => unreachable!(),
                 }

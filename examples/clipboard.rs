@@ -38,8 +38,11 @@ use url::Url;
 
 const MIN_DIM_SIZE: usize = 256;
 
+#[allow(dead_code)]
+// Example usage if RawSurface weren't already implemented
 struct MySurface(WlSurface);
 
+// Example usage if RawSurface weren't already implemented
 impl smithay_clipboard::dnd::RawSurface for MySurface {
     unsafe fn get_ptr(&mut self) -> *mut c_void {
         self.0.id().as_ptr().cast()
@@ -78,32 +81,34 @@ fn main() {
             return;
         };
         match event {
-            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Data { data, mime_type }) => {
+            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Data {
+                data, mime_type
+            }) => {
                 let s = smithay_clipboard::text::Text::try_from((data, mime_type)).unwrap();
                 println!("Received DnD data for {}: {}", id.unwrap_or_default(), s.0);
             },
-            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Leave) => {
-                if state.internal_dnd {
+            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Leave) =>
+            {
+                if state.internal_dnd  {
                     if state.pointer_focus {
                         println!("Internal drop completed!");
                     } else {
-                        // Internal DnD will be ignored after leaving the window in which it
-                        // started. Another approach might be to allow it to
-                        // re-enter before some time has passed.
+                        // Internal DnD will be ignored after leaving the window in which it started.
+                        // Another approach might be to allow it to re-enter before some time has passed.
                         state.internal_dnd = false;
                         state.clipboard.end_dnd();
                     }
                 } else {
                     println!("Dnd offer left {id:?}.");
                 }
-            },
+           },
             smithay_clipboard::dnd::DndEvent::Source(SourceEvent::Finished) => {
                 println!("Finished sending data.");
                 state.internal_dnd = false;
             },
             e => {
                 dbg!(e);
-            },
+            }
         }
     });
 
@@ -148,6 +153,7 @@ fn main() {
             actions: DndAction::Move,
             preferred: DndAction::Move,
         },
+
     ]);
 
     let mut simple_window = SimpleWindow {
@@ -381,12 +387,12 @@ impl PointerHandler for SimpleWindow {
                         DndAction::all(),
                     );
                 },
-                PointerEventKind::Leave { .. } => {
+                PointerEventKind::Leave {..} => {
                     self.pointer_focus = false;
-                },
-                PointerEventKind::Enter { .. } => {
+                }
+                PointerEventKind::Enter {..} => {
                     self.pointer_focus = true;
-                },
+                }
                 _ => {},
             }
         }

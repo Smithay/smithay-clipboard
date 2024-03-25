@@ -115,7 +115,8 @@ where
                 {
                     dnd_state.set_actions(action, preferred_action);
                     self.dnd_state.selected_mime = Some(mime_type.clone());
-                    dnd_state.accept_mime_type(self.dnd_state.accept_ctr, Some(mime_type.to_string()));
+                    dnd_state
+                        .accept_mime_type(self.dnd_state.accept_ctr, Some(mime_type.to_string()));
                     self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
                 }
                 (s.clone(), Some(dest))

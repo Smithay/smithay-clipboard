@@ -488,7 +488,9 @@ impl<T: 'static + Clone> DataSourceHandler for State<T> {
         #[cfg(feature = "dnd")]
         {
             if let Some(s) = self.dnd_state.sender.as_ref() {
-                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Mime(m.map(|s| MimeType::from(Cow::Owned(s))))));
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Mime(
+                    m.map(|s| MimeType::from(Cow::Owned(s))),
+                )));
             }
         }
     }

@@ -43,8 +43,8 @@ impl RawSurface for WlSurface {
 pub trait RawSurface {
     /// # Safety
     ///
-    /// returned pointer must be a valid `*mut wl_surface` pointer, and it must remain
-    /// valid for as long as `RawSurface` object is alive. 
+    /// returned pointer must be a valid `*mut wl_surface` pointer, and it must
+    /// remain valid for as long as `RawSurface` object is alive.
     unsafe fn get_ptr(&mut self) -> *mut c_void;
 }
 

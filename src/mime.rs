@@ -97,7 +97,7 @@ impl MimeType {
     ///
     /// `find_allowed()` searches for mime type clipboard supports, if we have a
     /// match, returns `Some(MimeType)`, otherwise `None`.
-    pub fn find_allowed(
+    pub(crate) fn find_allowed(
         offered_mime_types: &[String],
         allowed_mime_types: &[Self],
     ) -> Option<Self> {

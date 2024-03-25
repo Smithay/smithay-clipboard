@@ -8,15 +8,18 @@ use std::str::{FromStr, Utf8Error};
 
 use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::output::{OutputHandler, OutputState};
-use sctk::reexports::calloop::{EventLoop, LoopHandle};
+use sctk::reexports::calloop::{self, EventLoop, LoopHandle};
 use sctk::reexports::calloop_wayland_source::WaylandSource;
 use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
-use sctk::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
+use sctk::reexports::client::protocol::{
+    wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
+};
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers};
+use sctk::seat::pointer::{PointerEventKind, PointerHandler, BTN_LEFT, BTN_RIGHT};
 use sctk::seat::{Capability, SeatHandler, SeatState};
 use sctk::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
 use sctk::shell::xdg::XdgShell;
@@ -24,10 +27,10 @@ use sctk::shell::WaylandSurface;
 use sctk::shm::slot::{Buffer, SlotPool};
 use sctk::shm::{Shm, ShmHandler};
 use sctk::{
-    delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
-    delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
+    delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
-use smithay_clipboard::dnd::{DndDestinationRectangle, Rectangle};
+use smithay_clipboard::dnd::{DndDestinationRectangle, OfferEvent, Rectangle, SourceEvent};
 use smithay_clipboard::mime::{AllowedMimeTypes, AsMimeTypes, MimeType, ALLOWED_TEXT_MIME_TYPES};
 use smithay_clipboard::{Clipboard, SimpleClipboard};
 use thiserror::Error;
@@ -70,8 +73,38 @@ fn main() {
     let (tx, rx) = sctk::reexports::calloop::channel::sync_channel(10);
     clipboard.init_dnd(Box::new(tx)).expect("Failed to set up DnD");
 
-    _ = event_loop.handle().insert_source(rx, |event, _, _state| {
-        dbg!(event);
+    _ = event_loop.handle().insert_source(rx, |event, _, state| {
+        let calloop::channel::Event::Msg(event) = event else {
+            return;
+        };
+        match event {
+            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Data { data, mime_type }) => {
+                let s = smithay_clipboard::text::Text::try_from((data, mime_type)).unwrap();
+                println!("Received DnD data for {}: {}", id.unwrap_or_default(), s.0);
+            },
+            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Leave) => {
+                if state.internal_dnd {
+                    if state.pointer_focus {
+                        println!("Internal drop completed!");
+                    } else {
+                        // Internal DnD will be ignored after leaving the window in which it
+                        // started. Another approach might be to allow it to
+                        // re-enter before some time has passed.
+                        state.internal_dnd = false;
+                        state.clipboard.end_dnd();
+                    }
+                } else {
+                    println!("Dnd offer left {id:?}.");
+                }
+            },
+            smithay_clipboard::dnd::DndEvent::Source(SourceEvent::Finished) => {
+                println!("Finished sending data.");
+                state.internal_dnd = false;
+            },
+            e => {
+                dbg!(e);
+            },
+        }
     });
 
     clipboard.register_dnd_destination(window.wl_surface().clone(), vec![
@@ -84,6 +117,36 @@ fn main() {
                 .collect(),
             actions: DndAction::all(),
             preferred: DndAction::Copy,
+        },
+        DndDestinationRectangle {
+            id: 1,
+            rectangle: Rectangle { x: 256., y: 0., width: 256., height: 256. },
+            mime_types: ALLOWED_TEXT_MIME_TYPES
+                .iter()
+                .map(|m| MimeType::from(Cow::from(m.to_string())))
+                .collect(),
+            actions: DndAction::all(),
+            preferred: DndAction::Copy,
+        },
+        DndDestinationRectangle {
+            id: 2,
+            rectangle: Rectangle { x: 0., y: 256., width: 256., height: 256. },
+            mime_types: ALLOWED_TEXT_MIME_TYPES
+                .iter()
+                .map(|m| MimeType::from(Cow::from(m.to_string())))
+                .collect(),
+            actions: DndAction::Copy,
+            preferred: DndAction::Copy,
+        },
+        DndDestinationRectangle {
+            id: 3,
+            rectangle: Rectangle { x: 256., y: 256., width: 256., height: 256. },
+            mime_types: ALLOWED_TEXT_MIME_TYPES
+                .iter()
+                .map(|m| MimeType::from(Cow::from(m.to_string())))
+                .collect(),
+            actions: DndAction::Move,
+            preferred: DndAction::Move,
         },
     ]);
 
@@ -102,7 +165,10 @@ fn main() {
         buffer: None,
         window,
         keyboard: None,
+        pointer: None,
+        internal_dnd: false,
         keyboard_focus: false,
+        pointer_focus: false,
         loop_handle: event_loop.handle(),
     };
 
@@ -131,7 +197,10 @@ struct SimpleWindow {
     buffer: Option<Buffer>,
     window: Window,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+    internal_dnd: bool,
     keyboard_focus: bool,
+    pointer_focus: bool,
     loop_handle: LoopHandle<'static, SimpleWindow>,
 }
 
@@ -255,6 +324,12 @@ impl SeatHandler for SimpleWindow {
 
             self.keyboard = Some(keyboard);
         }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            println!("Set pointer capability");
+            let pointer = self.seat_state.get_pointer(qh, &seat).expect("Failed to create pointer");
+
+            self.pointer = Some(pointer);
+        }
     }
 
     fn remove_capability(
@@ -271,6 +346,51 @@ impl SeatHandler for SimpleWindow {
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for SimpleWindow {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &sctk::reexports::client::protocol::wl_pointer::WlPointer,
+        events: &[sctk::seat::pointer::PointerEvent],
+    ) {
+        for e in events {
+            match &e.kind {
+                PointerEventKind::Press { button, .. } if *button == BTN_LEFT => {
+                    println!("Starting a drag!");
+                    self.clipboard.start_dnd(
+                        false,
+                        self.window.wl_surface().clone(),
+                        None,
+                        smithay_clipboard::text::Text("Clipboard Drag and Drop!".to_string()),
+                        DndAction::all(),
+                    );
+                },
+                PointerEventKind::Press { button, .. } if *button == BTN_RIGHT => {
+                    println!("Starting an internal drag!");
+                    self.internal_dnd = true;
+                    self.clipboard.start_dnd(
+                        true,
+                        self.window.wl_surface().clone(),
+                        None,
+                        smithay_clipboard::text::Text(
+                            "Internal clipboard Drag and Drop!".to_string(),
+                        ),
+                        DndAction::all(),
+                    );
+                },
+                PointerEventKind::Leave { .. } => {
+                    self.pointer_focus = false;
+                },
+                PointerEventKind::Enter { .. } => {
+                    self.pointer_focus = true;
+                },
+                _ => {},
+            }
+        }
+    }
 }
 
 impl KeyboardHandler for SimpleWindow {
@@ -509,6 +629,7 @@ delegate_shm!(SimpleWindow);
 
 delegate_seat!(SimpleWindow);
 delegate_keyboard!(SimpleWindow);
+delegate_pointer!(SimpleWindow);
 
 delegate_xdg_shell!(SimpleWindow);
 delegate_xdg_window!(SimpleWindow);

@@ -39,7 +39,7 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 use wayland_backend::client::ObjectId;
 
 use crate::dnd::state::DndState;
-use crate::dnd::DndSurface;
+use crate::dnd::{DndEvent, DndSurface};
 use crate::mime::{AsMimeTypes, MimeType};
 use crate::text::Text;
 
@@ -50,14 +50,14 @@ pub struct State<T> {
     pub exit: bool,
 
     registry_state: RegistryState,
-    seat_state: SeatState,
+    pub(crate) seat_state: SeatState,
 
     pub(crate) seats: HashMap<ObjectId, ClipboardSeatState>,
     /// The latest seat which got an event.
     pub(crate) latest_seat: Option<ObjectId>,
 
     pub(crate) loop_handle: LoopHandle<'static, Self>,
-    queue_handle: QueueHandle<Self>,
+    pub(crate) queue_handle: QueueHandle<Self>,
 
     primary_sources: Vec<PrimarySelectionSource>,
     primary_selection_content: Box<dyn AsMimeTypes>,
@@ -148,10 +148,6 @@ impl<T: 'static + Clone> State<T> {
                 source.set_selection(seat.primary_device.as_ref().unwrap(), seat.latest_serial);
                 self.primary_sources.push(source);
             },
-            #[cfg(feature = "dnd")]
-            Target::DnD => {
-                unreachable!()
-            },
         }
 
         Some(())
@@ -211,21 +207,6 @@ impl<T: 'static + Clone> State<T> {
 
                 (selection.receive(mime_type.to_string())?, mime_type)
             },
-            #[cfg(feature = "dnd")]
-            Target::DnD => {
-                let offer = seat
-                    .data_device
-                    .as_ref()
-                    .and_then(|d| d.data().drag_offer())
-                    .ok_or_else(|| Error::new(ErrorKind::Other, "offer does not exist."))?;
-                let Some(mime) = allowed_mime_types.first() else {
-                    return Err(Error::new(
-                        ErrorKind::NotFound,
-                        "supported mime-type is not found",
-                    ));
-                };
-                (offer.receive(mime.to_string())?, mime.clone())
-            },
         };
 
         // Mark FD as non-blocking so we won't block ourselves.
@@ -262,8 +243,6 @@ impl<T: 'static + Clone> State<T> {
         let Some(mime_type) = MimeType::find_allowed(&[mime], match ty {
             Target::Clipboard => &self.data_selection_mime_types,
             Target::Primary => &self.primary_selection_mime_types,
-            #[cfg(feature = "dnd")]
-            Target::DnD => &self.dnd_state.source_mime_types,
         }) else {
             return;
         };
@@ -280,8 +259,6 @@ impl<T: 'static + Clone> State<T> {
         let contents = match ty {
             Target::Clipboard => self.data_selection_content.as_bytes(&mime_type),
             Target::Primary => self.primary_selection_content.as_bytes(&mime_type),
-            #[cfg(feature = "dnd")]
-            Target::DnD => self.dnd_state.source_content.as_bytes(&mime_type),
         };
 
         let Some(contents) = contents else {
@@ -471,15 +448,34 @@ impl<T: 'static + Clone> DataSourceHandler for State<T> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlDataSource,
+        _source: &WlDataSource,
         mime: String,
         write_pipe: WritePipe,
     ) {
+        #[cfg(feature = "dnd")]
+        if self
+            .dnd_state
+            .dnd_source
+            .as_ref()
+            .map(|my_source| my_source.inner() == _source)
+            .unwrap_or_default()
+        {
+            self.send_dnd_request(write_pipe, mime);
+            return;
+        }
         self.send_request(Target::Clipboard, write_pipe, mime)
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, deleted: &WlDataSource) {
-        self.data_sources.retain(|source| source.inner() != deleted)
+        self.data_sources.retain(|source| source.inner() != deleted);
+        #[cfg(feature = "dnd")]
+        {
+            self.dnd_state.source_content = None;
+            self.dnd_state.dnd_source = None;
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Cancelled));
+            }
+        }
     }
 
     fn accept_mime(
@@ -487,15 +483,44 @@ impl<T: 'static + Clone> DataSourceHandler for State<T> {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &WlDataSource,
-        _: Option<String>,
+        m: Option<String>,
     ) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Mime(m.map(|s| MimeType::from(Cow::Owned(s))))));
+            }
+        }
     }
 
-    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Dropped))
+            }
+        }
+    }
 
-    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, a: DndAction) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Action(a)))
+            }
+        }
+    }
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        #[cfg(feature = "dnd")]
+        {
+            self.dnd_state.source_content = None;
+            self.dnd_state.dnd_source = None;
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Finished));
+            }
+        }
+    }
 }
 
 impl<T: 'static + Clone> DataOfferHandler for State<T> {
@@ -605,9 +630,6 @@ pub enum Target {
     Clipboard,
     /// The target is primary selection.
     Primary,
-    #[cfg(feature = "dnd")]
-    /// The targe is a DnD offer.
-    DnD,
 }
 
 #[derive(Debug, Default)]
@@ -619,7 +641,7 @@ pub(crate) struct ClipboardSeatState {
     pub(crate) has_focus: bool,
 
     /// The latest serial used to set the selection content.
-    latest_serial: u32,
+    pub(crate) latest_serial: u32,
 }
 
 impl Drop for ClipboardSeatState {

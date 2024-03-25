@@ -1,12 +1,13 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Read};
+use std::io::{Error, ErrorKind, Read, Write};
 use std::mem;
 use std::os::unix::io::AsRawFd;
 use std::rc::Rc;
 
 use sctk::data_device_manager::data_offer::DragOffer;
 use sctk::data_device_manager::data_source::DragSource;
+use sctk::data_device_manager::WritePipe;
 use sctk::reexports::calloop::PostAction;
 use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
 use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
@@ -23,13 +24,14 @@ use super::{DndDestinationRectangle, DndEvent, DndRequest, DndSurface, OfferEven
 pub(crate) struct DndState<T> {
     pub(crate) sender: Option<Box<dyn crate::dnd::Sender<T>>>,
     destinations: HashMap<ObjectId, (DndSurface<T>, Vec<DndDestinationRectangle>)>,
-    dnd_sources: Option<DragSource>,
+    pub(crate) dnd_source: Option<DragSource>,
     active_surface: Option<(DndSurface<T>, Option<DndDestinationRectangle>)>,
     source_actions: DndAction,
     selected_action: DndAction,
     selected_mime: Option<MimeType>,
-    pub(crate) source_content: Box<dyn AsMimeTypes>,
+    pub(crate) source_content: Option<Box<dyn AsMimeTypes>>,
     pub(crate) source_mime_types: Rc<Cow<'static, [MimeType]>>,
+    accept_ctr: u32,
 }
 
 impl<T> Default for DndState<T> {
@@ -37,13 +39,14 @@ impl<T> Default for DndState<T> {
         Self {
             sender: Default::default(),
             destinations: Default::default(),
-            dnd_sources: Default::default(),
+            dnd_source: Default::default(),
             active_surface: None,
             source_actions: DndAction::empty(),
             selected_action: DndAction::empty(),
             selected_mime: None,
-            source_content: Box::new(Text(String::new())),
+            source_content: None,
             source_mime_types: Rc::new(Cow::Owned(Vec::new())),
+            accept_ctr: 1,
         }
     }
 }
@@ -104,7 +107,8 @@ where
                                 ));
                             }
                             dnd_state.set_actions(DndAction::empty(), DndAction::empty());
-                            dnd_state.accept_mime_type(dnd_state.serial, None);
+                            dnd_state.accept_mime_type(self.dnd_state.accept_ctr, None);
+                            self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
                             self.dnd_state.selected_action = DndAction::empty();
                             self.dnd_state.selected_mime = None;
                         }
@@ -116,7 +120,8 @@ where
                 {
                     dnd_state.set_actions(action, preferred_action);
                     self.dnd_state.selected_mime = Some(mime_type.clone());
-                    dnd_state.accept_mime_type(dnd_state.serial, Some(mime_type.to_string()))
+                    dnd_state.accept_mime_type(self.dnd_state.accept_ctr, Some(mime_type.to_string()));
+                    self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
                 }
                 (s.clone(), Some(dest))
             });
@@ -174,7 +179,6 @@ where
         if self.dnd_state.sender.is_none() {
             return;
         }
-        dbg!(&self.dnd_state.destinations);
         let Some(data_device) = self
             .seats
             .iter()
@@ -182,8 +186,12 @@ where
         else {
             return;
         };
-        let dnd_state = data_device.data().drag_offer();
-        self.update_active_surface(surface, x, y, dnd_state.as_ref());
+        let drag_offer = data_device.data().drag_offer();
+        if drag_offer.is_none() && self.dnd_state.source_content.is_none() {
+            // Ignore cancelled internal DnD
+            return;
+        }
+        self.update_active_surface(surface, x, y, drag_offer.as_ref());
         let Some((surface, id)) = self
             .dnd_state
             .active_surface
@@ -220,9 +228,13 @@ where
         else {
             return;
         };
-        let dnd_state = data_device.data().drag_offer();
+        let drag_offer = data_device.data().drag_offer();
+        if drag_offer.is_none() && self.dnd_state.source_content.is_none() {
+            // Ignore cancelled internal DnD
+            return;
+        }
         if dest.is_none() {
-            self.update_active_surface(&surface.surface, x, y, dnd_state.as_ref());
+            self.update_active_surface(&surface.surface, x, y, drag_offer.as_ref());
         }
         let id = self.cur_id();
         if let Some(tx) = self.dnd_state.sender.as_ref() {
@@ -245,11 +257,97 @@ where
             DndRequest::Surface(s, dests) => {
                 self.dnd_state.destinations.insert(s.surface.id(), (s, dests));
             },
-            DndRequest::StartDnd { source, icon, content } => {},
-            DndRequest::SetAction(_) => {
-                todo!()
+            DndRequest::StartDnd { internal, source, icon, content, actions } => {
+                _ = self.start_dnd(internal, source, icon, content, actions);
+            },
+            DndRequest::SetAction(a) => {
+                _ = self.user_selected_action(a);
+            },
+            DndRequest::DndEnd => {
+                self.dnd_state.source_content = None;
+                self.dnd_state.dnd_source = None;
             },
         };
+    }
+
+    fn start_dnd(
+        &mut self,
+        internal: bool,
+        source_surface: DndSurface<T>,
+        icon: Option<DndSurface<T>>,
+        content: Box<dyn AsMimeTypes + Send>,
+        actions: DndAction,
+    ) -> std::io::Result<()> {
+        let latest = self
+            .latest_seat
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Other, "no events received on any seat"))?;
+        let seat = self
+            .seats
+            .get_mut(latest)
+            .ok_or_else(|| Error::new(ErrorKind::Other, "active seat lost"))?;
+        let serial = seat.latest_serial;
+
+        let data_device = seat
+            .data_device
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Other, "data device missing"))?;
+
+        if internal {
+            DragSource::start_internal_drag(
+                data_device,
+                &source_surface.surface,
+                icon.as_ref().map(|s| &s.surface),
+                serial,
+            )
+        } else {
+            let mime_types = content.available();
+            let source = self
+                .data_device_manager_state
+                .as_ref()
+                .map(|s| {
+                    s.create_drag_and_drop_source(
+                        &self.queue_handle,
+                        mime_types.iter().map(|m| m.as_ref()),
+                        actions,
+                    )
+                })
+                .ok_or_else(|| Error::new(ErrorKind::Other, "data device manager missing"))?;
+            source.start_drag(
+                data_device,
+                &source_surface.surface,
+                icon.as_ref().map(|s| &s.surface),
+                serial,
+            );
+            self.dnd_state.dnd_source = Some(source);
+            self.dnd_state.source_content = Some(content);
+            self.dnd_state.source_actions = actions;
+        }
+
+        Ok(())
+    }
+
+    fn user_selected_action(&mut self, a: DndAction) -> std::io::Result<()> {
+        let latest = self
+            .latest_seat
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Other, "no events received on any seat"))?;
+        let seat = self
+            .seats
+            .get_mut(latest)
+            .ok_or_else(|| Error::new(ErrorKind::Other, "active seat lost"))?;
+
+        let offer = seat
+            .data_device
+            .as_ref()
+            .and_then(|d| d.data().drag_offer())
+            .ok_or_else(|| Error::new(ErrorKind::Other, "offer does not exist."))?;
+        offer.set_actions(a, a);
+
+        if let Some(mime_type) = self.dnd_state.selected_mime.clone() {
+            _ = self.load_dnd(mime_type);
+        }
+        Ok(())
     }
 
     /// Load data for the given target.
@@ -290,7 +388,7 @@ where
                         offer.finish();
                         let _ = tx.send(DndEvent::Offer(cur_id, OfferEvent::Data {
                             data: mem::take(&mut content),
-                            mime_type: mem::take(&mut mime_type).to_string(),
+                            mime_type: mem::take(&mut mime_type),
                         }));
                         break PostAction::Remove;
                     },
@@ -305,5 +403,44 @@ where
         });
 
         Ok(())
+    }
+
+    pub(crate) fn send_dnd_request(&self, write_pipe: WritePipe, mime: String) {
+        let Some(content) = self.dnd_state.source_content.as_ref() else {
+            return;
+        };
+        let Some(mime_type) = MimeType::find_allowed(&[mime], &content.available()) else {
+            return;
+        };
+
+        // Mark FD as non-blocking so we won't block ourselves.
+        unsafe {
+            if set_non_blocking(write_pipe.as_raw_fd()).is_err() {
+                return;
+            }
+        }
+
+        // Don't access the content on the state directly, since it could change during
+        // the send.
+        let contents = content.as_bytes(&mime_type);
+        let Some(contents) = contents else {
+            return;
+        };
+
+        let mut written = 0;
+        let _ = self.loop_handle.insert_source(write_pipe, move |_, file, _| {
+            let file = unsafe { file.get_mut() };
+            loop {
+                match file.write(&contents[written..]) {
+                    Ok(n) if written + n == contents.len() => {
+                        written += n;
+                        break PostAction::Remove;
+                    },
+                    Ok(n) => written += n,
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => break PostAction::Continue,
+                    Err(_) => break PostAction::Remove,
+                }
+            }
+        });
     }
 }

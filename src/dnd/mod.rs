@@ -61,7 +61,7 @@ pub enum SourceEvent {
     Action(DndAction),
     /// Mime accepted by destination.
     /// If [`None`], no mime types are accepted.
-    Mime(Option<String>),
+    Mime(Option<MimeType>),
     /// DnD Dropped. The operation is still ongoing until receiving a
     /// [`Finished`] event.
     Dropped,
@@ -72,7 +72,7 @@ pub enum OfferEvent<T> {
     Enter {
         x: f64,
         y: f64,
-        mime_types: Vec<String>,
+        mime_types: Vec<MimeType>,
         surface: T,
     },
     Motion {
@@ -91,7 +91,7 @@ pub enum OfferEvent<T> {
     SelectedAction(DndAction),
     Data {
         data: Vec<u8>,
-        mime_type: String,
+        mime_type: MimeType,
     },
 }
 
@@ -131,12 +131,16 @@ pub enum DndRequest<T> {
     Surface(DndSurface<T>, Vec<DndDestinationRectangle>),
     /// Start a Dnd operation with the given source surface and data.
     StartDnd {
+        internal: bool,
         source: DndSurface<T>,
         icon: Option<DndSurface<T>>,
         content: Box<dyn AsMimeTypes + Send>,
+        actions: DndAction,
     },
     /// Set the DnD action chosen by the user.
     SetAction(DndAction),
+    /// End an active DnD Source
+    DndEnd,
 }
 
 #[derive(Debug)]
@@ -171,21 +175,27 @@ impl<T: RawSurface> Clipboard<T> {
     /// Start a DnD operation on the given surface with some data
     pub fn start_dnd<D: AsMimeTypes + Send + 'static>(
         &self,
+        internal: bool,
         source_surface: T,
         icon_surface: Option<T>,
         content: D,
+        actions: DndAction,
     ) {
         let source = DndSurface::new(source_surface, &self.connection).unwrap();
         let icon = icon_surface.map(|s| DndSurface::new(s, &self.connection).unwrap());
         _ = self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::StartDnd {
+            internal,
             source,
             icon,
             content: Box::new(content),
+            actions,
         }));
     }
 
     /// End the current DnD operation, if there is one
-    pub fn end_dnd() {}
+    pub fn end_dnd(&self) {
+        _ = self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::DndEnd));
+    }
 
     /// Register a surface for receiving DnD offers
     /// Rectangles should be provided in order of decreasing priority.
@@ -198,5 +208,9 @@ impl<T: RawSurface> Clipboard<T> {
     }
 
     /// Set the final action after presenting the user with a choice
-    pub fn set_action(&self, action: DndAction) {}
+    pub fn set_action(&self, action: DndAction) {
+        _ = self
+            .request_sender
+            .send(crate::worker::Command::DndRequest(DndRequest::SetAction(action)));
+    }
 }

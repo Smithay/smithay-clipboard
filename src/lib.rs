@@ -18,7 +18,7 @@ use sctk::reexports::client::Connection;
 pub mod dnd;
 pub mod mime;
 mod state;
-mod text;
+pub mod text;
 mod worker;
 
 use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};

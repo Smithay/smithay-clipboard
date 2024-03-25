@@ -248,7 +248,7 @@ where
 
     pub(crate) fn handle_dnd_request(&mut self, r: DndRequest<T>) {
         match r {
-            DndRequest::InitDnD(sender) => self.dnd_state.sender = Some(sender),
+            DndRequest::InitDnd(sender) => self.dnd_state.sender = Some(sender),
             DndRequest::Surface(s, dests) => {
                 self.dnd_state.destinations.insert(s.surface.id(), (s, dests));
             },

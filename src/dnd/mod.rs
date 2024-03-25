@@ -65,7 +65,7 @@ pub enum SourceEvent {
     /// If [`None`], no mime types are accepted.
     Mime(Option<MimeType>),
     /// DnD Dropped. The operation is still ongoing until receiving a
-    /// [`Finished`] event.
+    /// [`SourceEvent::Finished`] event.
     Dropped,
 }
 
@@ -88,7 +88,7 @@ pub enum OfferEvent<T> {
     /// An offer was dropped
     Drop,
     /// If the selected action is ASK, the user must be presented with a choice.
-    /// [`Clipboard::set_actions`] should then be called before data can be
+    /// [`Clipboard::set_action`] should then be called before data can be
     /// requested and th DnD operation can be finished.
     SelectedAction(DndAction),
     Data {
@@ -97,7 +97,7 @@ pub enum OfferEvent<T> {
     },
 }
 
-/// A rectangle with a logical location and size relative to a [`Surface`]
+/// A rectangle with a logical location and size relative to a [`DndSurface`]
 #[derive(Debug, Default, Clone)]
 pub struct Rectangle {
     pub x: f64,
@@ -128,7 +128,7 @@ pub struct DndDestinationRectangle {
 
 pub enum DndRequest<T> {
     /// Init DnD
-    InitDnD(Box<dyn crate::dnd::Sender<T> + Send>),
+    InitDnd(Box<dyn crate::dnd::Sender<T> + Send>),
     /// Register a surface for receiving Dnd events.
     Surface(DndSurface<T>, Vec<DndDestinationRectangle>),
     /// Start a Dnd operation with the given source surface and data.
@@ -171,7 +171,7 @@ impl<T: RawSurface> Clipboard<T> {
         &self,
         tx: Box<dyn Sender<T> + Send>,
     ) -> Result<(), SendError<crate::worker::Command<T>>> {
-        self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::InitDnD(tx)))
+        self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::InitDnd(tx)))
     }
 
     /// Start a DnD operation on the given surface with some data

@@ -69,16 +69,7 @@ impl AsRef<str> for MimeType {
     fn as_ref(&self) -> &str {
         match self {
             MimeType::Other(s) => s.as_ref(),
-            m => ALLOWED_TEXT_MIME_TYPES[m.discriminant()],
-        }
-    }
-}
-
-impl MimeType {
-    fn discriminant(&self) -> usize {
-        match self {
-            MimeType::Text(t) => *t as usize,
-            MimeType::Other(_) => 3,
+            MimeType::Text(text) => ALLOWED_TEXT_MIME_TYPES[*text as usize],
         }
     }
 }
@@ -123,7 +114,7 @@ impl std::fmt::Display for MimeType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MimeType::Other(m) => write!(f, "{}", m),
-            m => write!(f, "{}", ALLOWED_TEXT_MIME_TYPES[m.discriminant()]),
+            MimeType::Text(text) => write!(f, "{}", ALLOWED_TEXT_MIME_TYPES[*text as usize]),
         }
     }
 }

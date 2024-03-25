@@ -49,6 +49,22 @@ impl Default for MimeType {
     }
 }
 
+impl From<Cow<'static, str>> for MimeType {
+    fn from(value: Cow<'static, str>) -> Self {
+        if let Some(pos) = ALLOWED_TEXT_MIME_TYPES.into_iter().position(|allowed| allowed == value)
+        {
+            MimeType::Text(match pos {
+                0 => Text::TextPlainUtf8,
+                1 => Text::Utf8String,
+                2 => Text::TextPlain,
+                _ => unreachable!(),
+            })
+        } else {
+            MimeType::Other(value)
+        }
+    }
+}
+
 impl AsRef<str> for MimeType {
     fn as_ref(&self) -> &str {
         match self {
@@ -119,4 +135,27 @@ impl std::fmt::Display for MimeType {
 /// expect is LF.
 pub fn normalize_to_lf(text: String) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use crate::mime::{MimeType, ALLOWED_TEXT_MIME_TYPES};
+
+    #[test]
+    fn test_from_str() {
+        assert_eq!(
+            MimeType::from(Cow::Borrowed(ALLOWED_TEXT_MIME_TYPES[0])),
+            MimeType::Text(crate::mime::Text::TextPlainUtf8)
+        );
+        assert_eq!(
+            MimeType::from(Cow::Borrowed(ALLOWED_TEXT_MIME_TYPES[1])),
+            MimeType::Text(crate::mime::Text::Utf8String)
+        );
+        assert_eq!(
+            MimeType::from(Cow::Borrowed(ALLOWED_TEXT_MIME_TYPES[2])),
+            MimeType::Text(crate::mime::Text::TextPlain)
+        );
+    }
 }

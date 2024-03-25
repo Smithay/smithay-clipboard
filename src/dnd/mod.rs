@@ -8,7 +8,7 @@ use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::{Connection, Proxy};
 use wayland_backend::client::{InvalidId, ObjectId};
 
-use crate::mime::{AsMimeTypes, MimeType};
+use crate::mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
 use crate::Clipboard;
 
 pub mod state;
@@ -139,6 +139,8 @@ pub enum DndRequest<T> {
         content: Box<dyn AsMimeTypes + Send>,
         actions: DndAction,
     },
+    /// Peek the data of an active DnD offer
+    Peek(MimeType),
     /// Set the DnD action chosen by the user.
     SetAction(DndAction),
     /// End an active DnD Source
@@ -201,6 +203,8 @@ impl<T: RawSurface> Clipboard<T> {
 
     /// Register a surface for receiving DnD offers
     /// Rectangles should be provided in order of decreasing priority.
+    /// This method can be called multiple time for a single surface if the
+    /// rectangles change.
     pub fn register_dnd_destination(&self, surface: T, rectangles: Vec<DndDestinationRectangle>) {
         let s = DndSurface::new(surface, &self.connection).unwrap();
 
@@ -214,5 +218,31 @@ impl<T: RawSurface> Clipboard<T> {
         _ = self
             .request_sender
             .send(crate::worker::Command::DndRequest(DndRequest::SetAction(action)));
+    }
+
+    /// Peek at the contents of a DnD offer
+    pub fn peek_offer<D: AllowedMimeTypes + 'static>(
+        &self,
+        mime_type: MimeType,
+    ) -> std::io::Result<D> {
+        self.request_sender
+            .send(crate::worker::Command::DndRequest(DndRequest::Peek(mime_type)))
+            .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::Other, "Failed to send Peek request.")
+        })?;
+
+        self.request_receiver
+            .recv()
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "Failed to receive data request.")
+            })
+            .and_then(|ret| {
+                D::try_from(ret?).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to convert data to requested type.",
+                    )
+                })
+            })
     }
 }

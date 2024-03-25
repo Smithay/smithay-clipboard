@@ -162,7 +162,7 @@ where
         dnd_state.set_actions(self.dnd_state.selected_action, self.dnd_state.selected_action);
         dnd_state.accept_mime_type(dnd_state.serial, Some(mime.to_string()));
 
-        _ = self.load_dnd(mime);
+        _ = self.load_dnd(mime, false);
     }
 
     pub(crate) fn offer_enter(
@@ -263,6 +263,11 @@ where
                 self.dnd_state.source_content = None;
                 self.dnd_state.dnd_source = None;
             },
+            DndRequest::Peek(mime_type) => {
+                if let Err(err) = self.load_dnd(mime_type, true) {
+                    _ = self.reply_tx.send(Err(err));
+                }
+            },
         };
     }
 
@@ -341,13 +346,13 @@ where
         offer.set_actions(a, a);
 
         if let Some(mime_type) = self.dnd_state.selected_mime.clone() {
-            _ = self.load_dnd(mime_type);
+            _ = self.load_dnd(mime_type, false);
         }
         Ok(())
     }
 
     /// Load data for the given target.
-    pub fn load_dnd(&mut self, mut mime_type: MimeType) -> std::io::Result<()> {
+    pub fn load_dnd(&mut self, mut mime_type: MimeType, peek: bool) -> std::io::Result<()> {
         let cur_id = self.cur_id();
         let latest = self
             .latest_seat
@@ -375,23 +380,33 @@ where
         let mut content = Vec::new();
         let _ = self.loop_handle.insert_source(read_pipe, move |_, file, state| {
             let file = unsafe { file.get_mut() };
-            let Some(tx) = state.dnd_state.sender.as_ref() else {
-                return PostAction::Remove;
-            };
+
             loop {
                 match file.read(&mut reader_buffer) {
                     Ok(0) => {
-                        offer.finish();
-                        let _ = tx.send(DndEvent::Offer(cur_id, OfferEvent::Data {
-                            data: mem::take(&mut content),
-                            mime_type: mem::take(&mut mime_type),
-                        }));
+                        // only finish if not peeking
+                        if !peek {
+                            offer.finish();
+                        }
+
+                        if peek {
+                            _ = state
+                                .reply_tx
+                                .send(Ok((mem::take(&mut content), mem::take(&mut mime_type))));
+                        } else if let Some(tx) = state.dnd_state.sender.as_ref() {
+                            let _ = tx.send(DndEvent::Offer(cur_id, OfferEvent::Data {
+                                data: mem::take(&mut content),
+                                mime_type: mem::take(&mut mime_type),
+                            }));
+                        }
                         break PostAction::Remove;
                     },
                     Ok(n) => content.extend_from_slice(&reader_buffer[..n]),
                     Err(err) if err.kind() == ErrorKind::WouldBlock => break PostAction::Continue,
-                    Err(_) => {
-                        // let _ = state.dnd_state.sender.unwrap().send(Err(err));
+                    Err(err) => {
+                        if peek {
+                            let _ = state.reply_tx.send(Err(err));
+                        }
                         break PostAction::Remove;
                     },
                 };

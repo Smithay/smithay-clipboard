@@ -85,6 +85,18 @@ fn main() {
                 let s = smithay_clipboard::text::Text::try_from((data, mime_type)).unwrap();
                 println!("Received DnD data for {}: {}", id.unwrap_or_default(), s.0);
             },
+            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Motion { x, y }) => {
+                if id != state.offer_hover_id {
+                    state.offer_hover_id = id;
+                    if let Ok(data) = state.clipboard.peek_offer::<smithay_clipboard::text::Text>(
+                        MimeType::Text(smithay_clipboard::mime::Text::TextPlain),
+                    ) {
+                        println!("Peeked the data: {}", data.0);
+                    }
+                }
+                println!("Received DnD Motion for {id:?}: at {x}, {y}");
+            },
+
             smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Leave) => {
                 if state.internal_dnd {
                     if state.pointer_focus {
@@ -97,12 +109,25 @@ fn main() {
                         state.clipboard.end_dnd();
                     }
                 } else {
+                    state.offer_hover_id = None;
                     println!("Dnd offer left {id:?}.");
+                }
+            },
+            smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Enter { mime_types, .. }) => {
+                println!("Received DnD Enter for {id:?}");
+                state.offer_hover_id = id;
+                if let Some(mime) = mime_types.get(0) {
+                    if let Ok(data) =
+                        state.clipboard.peek_offer::<smithay_clipboard::text::Text>(mime.clone())
+                    {
+                        println!("Peeked the data: {}", data.0);
+                    }
                 }
             },
             smithay_clipboard::dnd::DndEvent::Source(SourceEvent::Finished) => {
                 println!("Finished sending data.");
                 state.internal_dnd = false;
+                state.offer_hover_id = None;
             },
             e => {
                 dbg!(e);
@@ -172,6 +197,7 @@ fn main() {
         internal_dnd: false,
         keyboard_focus: false,
         pointer_focus: false,
+        offer_hover_id: None,
         loop_handle: event_loop.handle(),
     };
 
@@ -204,6 +230,7 @@ struct SimpleWindow {
     internal_dnd: bool,
     keyboard_focus: bool,
     pointer_focus: bool,
+    offer_hover_id: Option<u128>,
     loop_handle: LoopHandle<'static, SimpleWindow>,
 }
 

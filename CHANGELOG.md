@@ -2,6 +2,8 @@
 
 ## 0.8.0
 
+- Add support for Drag and Drop behind the `dnd` feature
+- **Breaking** Introduced generic surface type parameter for `Clipboard`.
 - Add support for loading and storing custom data.
 - **Breaking** `Clipboard::load` renamed to `Clipboard::load_text`.
 - **Breaking** `Clipboard::load_primary` renamed to `Clipboard::load_primary_text`.

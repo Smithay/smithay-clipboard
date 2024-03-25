@@ -22,7 +22,7 @@ pub mod text;
 mod worker;
 
 use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
-use state::SelectionTarget;
+use state::Target;
 use text::Text;
 
 pub type SimpleClipboard = Clipboard<WlSurface>;

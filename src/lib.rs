@@ -12,8 +12,6 @@ use std::sync::mpsc::{self, Receiver};
 use sctk::reexports::calloop::channel::{self, Sender};
 use sctk::reexports::client::backend::Backend;
 use sctk::reexports::client::Connection;
-use state::SelectionTarget;
-use text::Text;
 
 pub mod mime;
 mod state;
@@ -21,6 +19,8 @@ mod text;
 mod worker;
 
 use mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
+use state::SelectionTarget;
+use text::Text;
 
 /// Access to a Wayland clipboard.
 pub struct Clipboard {

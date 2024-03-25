@@ -1,9 +1,7 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Write};
 use std::mem;
 use std::os::unix::io::AsRawFd;
-use std::rc::Rc;
 
 use sctk::data_device_manager::data_offer::DragOffer;
 use sctk::data_device_manager::data_source::DragSource;
@@ -17,7 +15,6 @@ use wayland_backend::client::ObjectId;
 
 use crate::mime::{AsMimeTypes, MimeType};
 use crate::state::{set_non_blocking, State};
-use crate::text::Text;
 
 use super::{DndDestinationRectangle, DndEvent, DndRequest, DndSurface, OfferEvent};
 
@@ -30,7 +27,6 @@ pub(crate) struct DndState<T> {
     selected_action: DndAction,
     selected_mime: Option<MimeType>,
     pub(crate) source_content: Option<Box<dyn AsMimeTypes>>,
-    pub(crate) source_mime_types: Rc<Cow<'static, [MimeType]>>,
     accept_ctr: u32,
 }
 
@@ -45,7 +41,6 @@ impl<T> Default for DndState<T> {
             selected_action: DndAction::empty(),
             selected_mime: None,
             source_content: None,
-            source_mime_types: Rc::new(Cow::Owned(Vec::new())),
             accept_ctr: 1,
         }
     }

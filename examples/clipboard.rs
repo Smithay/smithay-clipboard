@@ -2,6 +2,9 @@
 // application. For more details on what is going on, consult the
 // `smithay-client-toolkit` examples.
 
+use std::borrow::Cow;
+use std::str::{FromStr, Utf8Error};
+
 use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::output::{OutputHandler, OutputState};
 use sctk::reexports::calloop::{EventLoop, LoopHandle};
@@ -21,7 +24,10 @@ use sctk::{
     delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
     delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
+use smithay_clipboard::mime::{AllowedMimeTypes, AsMimeTypes, MimeType};
 use smithay_clipboard::Clipboard;
+use thiserror::Error;
+use url::Url;
 
 const MIN_DIM_SIZE: usize = 256;
 
@@ -277,26 +283,52 @@ impl KeyboardHandler for SimpleWindow {
     ) {
         match event.utf8.as_deref() {
             // Paste primary.
-            Some("P") => match self.clipboard.load_primary() {
+            Some("P") => match self.clipboard.load_primary_text() {
                 Ok(contents) => println!("Paste from primary clipboard: {contents}"),
                 Err(err) => eprintln!("Error loading from primary clipboard: {err}"),
             },
             // Paste clipboard.
-            Some("p") => match self.clipboard.load() {
+            Some("p") => match self.clipboard.load_text() {
                 Ok(contents) => println!("Paste from clipboard: {contents}"),
                 Err(err) => eprintln!("Error loading from clipboard: {err}"),
             },
             // Copy primary.
             Some("C") => {
                 let to_store = "Copy primary";
-                self.clipboard.store_primary(to_store);
+                self.clipboard.store_primary_text(to_store);
                 println!("Copied string into primary clipboard: {}", to_store);
             },
             // Copy clipboard.
             Some("c") => {
                 let to_store = "Copy";
-                self.clipboard.store(to_store);
+                self.clipboard.store_text(to_store);
                 println!("Copied string into clipboard: {}", to_store);
+            },
+            // Copy URI to primary clipboard.
+            Some("F") => {
+                let home = Uri::home();
+                println!("Copied home dir into primary clipboard: {}", home.0);
+                self.clipboard.store_primary(home);
+            },
+            // Copy URI to clipboard.
+            Some("f") => {
+                let home = Uri::home();
+                println!("Copied home dir into clipboard: {}", home.0);
+                self.clipboard.store(home);
+            },
+            // Read URI from clipboard
+            Some("o") => match self.clipboard.load::<Uri>() {
+                Ok(uri) => {
+                    println!("URI from clipboard: {}", uri.0);
+                },
+                Err(err) => eprintln!("Error loading from clipboard: {err}"),
+            },
+            // Read URI from clipboard
+            Some("O") => match self.clipboard.load_primary::<Uri>() {
+                Ok(uri) => {
+                    println!("URI from primary clipboard: {}", uri.0);
+                },
+                Err(err) => eprintln!("Error loading from clipboard: {err}"),
             },
             _ => (),
         }
@@ -381,6 +413,63 @@ impl SimpleWindow {
         self.window.commit();
     }
 }
+
+#[derive(Debug)]
+pub struct Uri(Url);
+
+impl Uri {
+    pub fn home() -> Self {
+        let home = dirs::home_dir().unwrap();
+        Uri(Url::from_file_path(home).unwrap())
+    }
+}
+
+impl AsMimeTypes for Uri {
+    fn available<'a>(&'a self) -> Cow<'static, [MimeType]> {
+        Self::allowed()
+    }
+
+    fn as_bytes(&self, mime_type: &MimeType) -> Option<Cow<'static, [u8]>> {
+        if mime_type == &Self::allowed()[0] {
+            Some(self.0.to_string().as_bytes().to_vec().into())
+        } else {
+            None
+        }
+    }
+}
+
+impl AllowedMimeTypes for Uri {
+    fn allowed() -> Cow<'static, [MimeType]> {
+        std::borrow::Cow::Borrowed(&[MimeType::Other(Cow::Borrowed("text/uri-list"))])
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum UriError {
+    #[error("Unsupported mime type")]
+    Unsupported,
+    #[error("Utf8 error")]
+    Utf8(Utf8Error),
+    #[error("URL parse error")]
+    Parse(url::ParseError),
+}
+
+impl TryFrom<(Vec<u8>, MimeType)> for Uri {
+    type Error = UriError;
+
+    fn try_from((data, mime): (Vec<u8>, MimeType)) -> Result<Self, Self::Error> {
+        if mime == Self::allowed()[0] {
+            std::str::from_utf8(&data)
+                .map_err(UriError::Utf8)
+                .and_then(|s| Url::from_str(s).map_err(UriError::Parse))
+                .map(Uri)
+        } else {
+            Err(UriError::Unsupported)
+        }
+    }
+}
+
+pub const URI_MIME_TYPE: &str = "text/uri-list";
 
 delegate_compositor!(SimpleWindow);
 delegate_output!(SimpleWindow);

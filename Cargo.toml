@@ -16,7 +16,10 @@ sctk = { package = "smithay-client-toolkit", version = "0.18.0", default-feature
 wayland-backend = { version = "0.3.0", default_features = false, features = ["client_system"] }
 
 [dev-dependencies]
+dirs = "5.0.1"
 sctk = { package = "smithay-client-toolkit", version = "0.18.0", default-features = false, features = ["calloop", "xkbcommon"] }
+thiserror = "1.0.57"
+url = "2.5.0"
 
 [features]
 default = ["dlopen"]

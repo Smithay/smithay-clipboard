@@ -81,24 +81,38 @@ impl Clipboard {
         self.load_primary::<Text>().map(|t| t.0)
     }
 
-    /// Load raw clipboard data.
+    /// Load clipboard data for sepecific mime types.
     ///
     /// Loads content from a  primary clipboard on a last observed seat.
-    pub fn load_raw(
+    pub fn load_mime<D: TryFrom<(Vec<u8>, MimeType)>>(
         &self,
         allowed: impl Into<Cow<'static, [MimeType]>>,
-    ) -> Result<(Vec<u8>, MimeType)> {
-        self.load_inner(SelectionTarget::Clipboard, allowed)
+    ) -> Result<D> {
+        self.load_inner(SelectionTarget::Clipboard, allowed).and_then(|d| {
+            D::try_from(d).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to load data of the requested type.",
+                )
+            })
+        })
     }
 
-    /// Load raw primary clipboard data.
+    /// Load primary clipboard data for specific mime types.
     ///
     /// Loads content from a  primary clipboard on a last observed seat.
-    pub fn load_primary_raw(
+    pub fn load_primary_mime<D: TryFrom<(Vec<u8>, MimeType)>>(
         &self,
         allowed: impl Into<Cow<'static, [MimeType]>>,
-    ) -> Result<(Vec<u8>, MimeType)> {
-        self.load_inner(SelectionTarget::Primary, allowed)
+    ) -> Result<D> {
+        self.load_inner(SelectionTarget::Primary, allowed).and_then(|d| {
+            D::try_from(d).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to load data of the requested type.",
+                )
+            })
+        })
     }
 
     /// Store custom data to a clipboard.

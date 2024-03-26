@@ -203,7 +203,7 @@ impl<T: RawSurface> Clipboard<T> {
 
     /// Register a surface for receiving DnD offers
     /// Rectangles should be provided in order of decreasing priority.
-    /// This method can be called multiple time for a single surface if the
+    /// This method c~an be called multiple time for a single surface if the
     /// rectangles change.
     pub fn register_dnd_destination(&self, surface: T, rectangles: Vec<DndDestinationRectangle>) {
         let s = DndSurface::new(surface, &self.connection).unwrap();
@@ -223,8 +223,12 @@ impl<T: RawSurface> Clipboard<T> {
     /// Peek at the contents of a DnD offer
     pub fn peek_offer<D: AllowedMimeTypes + 'static>(
         &self,
-        mime_type: MimeType,
+        mime_type: Option<MimeType>,
     ) -> std::io::Result<D> {
+        let Some(mime_type) = mime_type.or_else(|| D::allowed().first().cloned()) else {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No mime type provided."));
+        };
+
         self.request_sender
             .send(crate::worker::Command::DndRequest(DndRequest::Peek(mime_type)))
             .map_err(|_| {

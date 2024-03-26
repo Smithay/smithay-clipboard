@@ -88,9 +88,9 @@ fn main() {
             smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Motion { x, y }) => {
                 if id != state.offer_hover_id {
                     state.offer_hover_id = id;
-                    if let Ok(data) = state.clipboard.peek_offer::<smithay_clipboard::text::Text>(
-                        MimeType::Text(smithay_clipboard::mime::Text::TextPlain),
-                    ) {
+                    if let Ok(data) =
+                        state.clipboard.peek_offer::<smithay_clipboard::text::Text>(None)
+                    {
                         println!("Peeked the data: {}", data.0);
                     }
                 }
@@ -117,8 +117,9 @@ fn main() {
                 println!("Received DnD Enter for {id:?}");
                 state.offer_hover_id = id;
                 if let Some(mime) = mime_types.get(0) {
-                    if let Ok(data) =
-                        state.clipboard.peek_offer::<smithay_clipboard::text::Text>(mime.clone())
+                    if let Ok(data) = state
+                        .clipboard
+                        .peek_offer::<smithay_clipboard::text::Text>(Some(mime.clone()))
                     {
                         println!("Peeked the data: {}", data.0);
                     }

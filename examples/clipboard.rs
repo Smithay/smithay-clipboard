@@ -116,7 +116,7 @@ fn main() {
             smithay_clipboard::dnd::DndEvent::Offer(id, OfferEvent::Enter { mime_types, .. }) => {
                 println!("Received DnD Enter for {id:?}");
                 state.offer_hover_id = id;
-                if let Some(mime) = mime_types.get(0) {
+                if let Some(mime) = mime_types.first() {
                     if let Ok(data) = state
                         .clipboard
                         .peek_offer::<smithay_clipboard::text::Text>(Some(mime.clone()))
@@ -589,7 +589,7 @@ impl SimpleWindow {
         };
 
         // Draw to the window:
-        canvas.chunks_exact_mut(4).enumerate().for_each(|(_, chunk)| {
+        canvas.chunks_exact_mut(4).for_each(|chunk| {
             // ARGB color.
             let color = 0xFF181818u32;
 

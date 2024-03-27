@@ -353,7 +353,7 @@ where
 
         if let (Some((wl_buffer, width, height)), Some(surface)) = (buffer, icon_surface) {
             surface.damage_buffer(0, 0, width as i32, height as i32);
-            surface.attach(Some(&wl_buffer), 0, 0);
+            surface.attach(Some(wl_buffer), 0, 0);
             surface.commit();
 
             dbg!("attached buffer, damaged surface.");

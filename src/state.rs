@@ -99,9 +99,9 @@ impl<T: 'static + Clone> State<T> {
         }
 
         let compositor_state =
-            CompositorState::bind(&globals, &queue_handle).expect("wl_compositor not available");
-        let output_state = OutputState::new(&globals, &queue_handle);
-        let shm = Shm::bind(&globals, &queue_handle).expect("wl_shm not available");
+            CompositorState::bind(globals, queue_handle).expect("wl_compositor not available");
+        let output_state = OutputState::new(globals, queue_handle);
+        let shm = Shm::bind(globals, queue_handle).expect("wl_shm not available");
 
         let seat_state = SeatState::new(globals, queue_handle);
         for seat in seat_state.seats() {

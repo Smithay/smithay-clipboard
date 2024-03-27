@@ -135,7 +135,7 @@ pub enum DndRequest<T> {
     StartDnd {
         internal: bool,
         source: DndSurface<T>,
-        icon: Option<DndSurface<T>>,
+        icon: Option<Icon<DndSurface<T>>>,
         content: Box<dyn AsMimeTypes + Send>,
         actions: DndAction,
     },
@@ -167,6 +167,17 @@ impl<T> Sender<T> for calloop::channel::SyncSender<DndEvent<T>> {
     }
 }
 
+pub enum Icon<S> {
+    Surface(S),
+    /// Argb8888 or Xrgb8888 encoded image data pre-multiplied by alpha.
+    Buf {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+        transparent: bool,
+    },
+}
+
 impl<T: RawSurface> Clipboard<T> {
     /// Set up DnD operations for the Clipboard
     pub fn init_dnd(
@@ -181,12 +192,17 @@ impl<T: RawSurface> Clipboard<T> {
         &self,
         internal: bool,
         source_surface: T,
-        icon_surface: Option<T>,
+        icon_surface: Option<Icon<T>>,
         content: D,
         actions: DndAction,
     ) {
         let source = DndSurface::new(source_surface, &self.connection).unwrap();
-        let icon = icon_surface.map(|s| DndSurface::new(s, &self.connection).unwrap());
+        let icon = icon_surface.map(|i| match i {
+            Icon::Surface(s) => Icon::Surface(DndSurface::new(s, &self.connection).unwrap()),
+            Icon::Buf { width, height, data, transparent } => {
+                Icon::Buf { width, height, data, transparent }
+            },
+        });
         _ = self.request_sender.send(crate::worker::Command::DndRequest(DndRequest::StartDnd {
             internal,
             source,

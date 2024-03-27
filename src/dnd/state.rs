@@ -9,6 +9,7 @@ use sctk::data_device_manager::WritePipe;
 use sctk::reexports::calloop::PostAction;
 use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
 use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
+use sctk::reexports::client::protocol::wl_shm::Format;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::Proxy;
 use wayland_backend::client::ObjectId;
@@ -16,7 +17,7 @@ use wayland_backend::client::ObjectId;
 use crate::mime::{AsMimeTypes, MimeType};
 use crate::state::{set_non_blocking, State};
 
-use super::{DndDestinationRectangle, DndEvent, DndRequest, DndSurface, OfferEvent};
+use super::{DndDestinationRectangle, DndEvent, DndRequest, DndSurface, Icon, OfferEvent};
 
 pub(crate) struct DndState<T> {
     pub(crate) sender: Option<Box<dyn crate::dnd::Sender<T>>>,
@@ -26,6 +27,7 @@ pub(crate) struct DndState<T> {
     source_actions: DndAction,
     selected_action: DndAction,
     selected_mime: Option<MimeType>,
+    pub(crate) icon_surface: Option<WlSurface>,
     pub(crate) source_content: Option<Box<dyn AsMimeTypes>>,
     accept_ctr: u32,
 }
@@ -42,6 +44,7 @@ impl<T> Default for DndState<T> {
             selected_mime: None,
             source_content: None,
             accept_ctr: 1,
+            icon_surface: None,
         }
     }
 }
@@ -262,6 +265,8 @@ where
             DndRequest::DndEnd => {
                 self.dnd_state.source_content = None;
                 self.dnd_state.dnd_source = None;
+                self.pool.remove(&0);
+                self.dnd_state.icon_surface = None;
             },
             DndRequest::Peek(mime_type) => {
                 if let Err(err) = self.load_dnd(mime_type, true) {
@@ -275,7 +280,7 @@ where
         &mut self,
         internal: bool,
         source_surface: DndSurface<T>,
-        icon: Option<DndSurface<T>>,
+        mut icon: Option<Icon<DndSurface<T>>>,
         content: Box<dyn AsMimeTypes + Send>,
         actions: DndAction,
     ) -> std::io::Result<()> {
@@ -294,11 +299,36 @@ where
             .as_ref()
             .ok_or_else(|| Error::new(ErrorKind::Other, "data device missing"))?;
 
+        let (icon_surface, buffer) = if let Some(i) = icon.take() {
+            match i {
+                Icon::Surface(s) => (Some(s.surface.clone()), None),
+                Icon::Buf { data, width, height, transparent } => {
+                    let surface = self.compositor_state.create_surface(&self.queue_handle);
+                    self.pool.remove(&0);
+                    let (_, wl_buffer, buf) = self
+                        .pool
+                        .create_buffer(
+                            width as i32,
+                            width as i32 * 4,
+                            height as i32,
+                            &0,
+                            if transparent { Format::Argb8888 } else { Format::Xrgb8888 },
+                        )
+                        .map_err(|err| Error::new(ErrorKind::Other, err))?;
+                    buf.copy_from_slice(&data);
+
+                    (Some(surface), Some((wl_buffer, width, height)))
+                },
+            }
+        } else {
+            (None, None)
+        };
+
         if internal {
             DragSource::start_internal_drag(
                 data_device,
                 &source_surface.surface,
-                icon.as_ref().map(|s| &s.surface),
+                icon_surface.as_ref(),
                 serial,
             )
         } else {
@@ -314,15 +344,20 @@ where
                     )
                 })
                 .ok_or_else(|| Error::new(ErrorKind::Other, "data device manager missing"))?;
-            source.start_drag(
-                data_device,
-                &source_surface.surface,
-                icon.as_ref().map(|s| &s.surface),
-                serial,
-            );
+            source.start_drag(data_device, &source_surface.surface, icon_surface.as_ref(), serial);
+
             self.dnd_state.dnd_source = Some(source);
             self.dnd_state.source_content = Some(content);
             self.dnd_state.source_actions = actions;
+        }
+
+        if let (Some((wl_buffer, width, height)), Some(surface)) = (buffer, icon_surface) {
+            surface.damage_buffer(0, 0, width as i32, height as i32);
+            surface.attach(Some(&wl_buffer), 0, 0);
+            surface.commit();
+
+            dbg!("attached buffer, damaged surface.");
+            self.dnd_state.icon_surface = Some(surface);
         }
 
         Ok(())

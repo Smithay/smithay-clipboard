@@ -7,10 +7,12 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
+use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferError, DataOfferHandler, DragOffer};
 use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
+use sctk::output::{OutputHandler, OutputState};
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
 use sctk::primary_selection::selection::{PrimarySelectionSource, PrimarySelectionSourceHandler};
 use sctk::primary_selection::PrimarySelectionManagerState;
@@ -18,9 +20,11 @@ use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
 use sctk::seat::{Capability, SeatHandler, SeatState};
+use sctk::shm::multi::MultiPool;
+use sctk::shm::{Shm, ShmHandler};
 use sctk::{
-    delegate_data_device, delegate_pointer, delegate_primary_selection, delegate_registry,
-    delegate_seat, registry_handlers,
+    delegate_compositor, delegate_data_device, delegate_output, delegate_pointer,
+    delegate_primary_selection, delegate_registry, delegate_seat, delegate_shm, registry_handlers,
 };
 
 use sctk::reexports::calloop::{LoopHandle, PostAction};
@@ -68,6 +72,10 @@ pub struct State<T> {
     data_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
     #[cfg(feature = "dnd")]
     pub(crate) dnd_state: crate::dnd::state::DndState<T>,
+    pub(crate) compositor_state: CompositorState,
+    output_state: OutputState,
+    pub(crate) shm: Shm,
+    pub(crate) pool: MultiPool<u8>,
     _phantom: PhantomData<T>,
 }
 
@@ -89,6 +97,11 @@ impl<T: 'static + Clone> State<T> {
         if data_device_manager_state.is_none() && primary_selection_manager_state.is_none() {
             return None;
         }
+
+        let compositor_state =
+            CompositorState::bind(&globals, &queue_handle).expect("wl_compositor not available");
+        let output_state = OutputState::new(&globals, &queue_handle);
+        let shm = Shm::bind(&globals, &queue_handle).expect("wl_shm not available");
 
         let seat_state = SeatState::new(globals, queue_handle);
         for seat in seat_state.seats() {
@@ -115,6 +128,10 @@ impl<T: 'static + Clone> State<T> {
             #[cfg(feature = "dnd")]
             dnd_state: DndState::default(),
             _phantom: PhantomData,
+            compositor_state,
+            output_state,
+            pool: MultiPool::new(&shm).expect("Failed to create memory pool."),
+            shm,
         })
     }
 
@@ -475,6 +492,8 @@ impl<T: 'static + Clone> DataSourceHandler for State<T> {
             if let Some(s) = self.dnd_state.sender.as_ref() {
                 _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Cancelled));
             }
+            _ = self.pool.remove(&0);
+            self.dnd_state.icon_surface = None;
         }
     }
 
@@ -501,6 +520,8 @@ impl<T: 'static + Clone> DataSourceHandler for State<T> {
             if let Some(s) = self.dnd_state.sender.as_ref() {
                 _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Dropped))
             }
+            _ = self.pool.remove(&0);
+            self.dnd_state.icon_surface = None;
         }
     }
 
@@ -620,6 +641,74 @@ impl<T: 'static + Clone> Dispatch<WlKeyboard, ObjectId, State<T>> for State<T> {
     }
 }
 
+impl<T: 'static + Clone> CompositorHandler for State<T> {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
+        _new_transform: sctk::reexports::client::protocol::wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
+        _time: u32,
+    ) {
+    }
+}
+
+impl<T: 'static + Clone> OutputHandler for State<T> {
+    fn output_state(&mut self) -> &mut sctk::output::OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: sctk::reexports::client::protocol::wl_output::WlOutput,
+    ) {
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: sctk::reexports::client::protocol::wl_output::WlOutput,
+    ) {
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: sctk::reexports::client::protocol::wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl<T: 'static + Clone> ShmHandler for State<T> {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+delegate_compositor!(@<T: 'static + Clone> State<T>);
+delegate_output!(@<T: 'static + Clone> State<T>);
+delegate_shm!(@<T: 'static + Clone> State<T>);
 delegate_seat!(@<T: 'static + Clone> State<T>);
 delegate_pointer!(@<T: 'static + Clone> State<T>);
 delegate_data_device!(@<T: 'static + Clone> State<T>);

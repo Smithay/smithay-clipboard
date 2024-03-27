@@ -30,7 +30,7 @@ use sctk::{
     delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
     delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
-use smithay_clipboard::dnd::{DndDestinationRectangle, OfferEvent, Rectangle, SourceEvent};
+use smithay_clipboard::dnd::{DndDestinationRectangle, Icon, OfferEvent, Rectangle, SourceEvent};
 use smithay_clipboard::mime::{AllowedMimeTypes, AsMimeTypes, MimeType, ALLOWED_TEXT_MIME_TYPES};
 use smithay_clipboard::{Clipboard, SimpleClipboard};
 use thiserror::Error;
@@ -391,21 +391,33 @@ impl PointerHandler for SimpleWindow {
             match &e.kind {
                 PointerEventKind::Press { button, .. } if *button == BTN_LEFT => {
                     println!("Starting a drag!");
+
                     self.clipboard.start_dnd(
                         false,
                         self.window.wl_surface().clone(),
-                        None,
+                        Some(Icon::Buf {
+                            width: 256,
+                            height: 256,
+                            data: vec![0x99; 256 * 256 * 4],
+                            transparent: true,
+                        }),
                         smithay_clipboard::text::Text("Clipboard Drag and Drop!".to_string()),
                         DndAction::all(),
                     );
                 },
                 PointerEventKind::Press { button, .. } if *button == BTN_RIGHT => {
                     println!("Starting an internal drag!");
+
                     self.internal_dnd = true;
                     self.clipboard.start_dnd(
                         true,
                         self.window.wl_surface().clone(),
-                        None,
+                        Some(Icon::Buf {
+                            width: 256,
+                            height: 256,
+                            data: vec![0xFF; 256 * 256 * 4],
+                            transparent: true,
+                        }),
                         smithay_clipboard::text::Text(
                             "Internal clipboard Drag and Drop!".to_string(),
                         ),

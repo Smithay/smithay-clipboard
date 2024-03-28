@@ -34,6 +34,16 @@ impl<T: RawSurface> DndSurface<T> {
     }
 }
 
+#[cfg(feature = "rwh-6")]
+impl<'a> RawSurface for raw_window_handle::WindowHandle<'a> {
+    unsafe fn get_ptr(&mut self) -> *mut c_void {
+        match self.as_raw() {
+            raw_window_handle::RawWindowHandle::Wayland(handle) => handle.surface.as_ptr().cast(),
+            _ => panic!("Unsupported window handle type."),
+        }
+    }
+}
+
 impl RawSurface for WlSurface {
     unsafe fn get_ptr(&mut self) -> *mut c_void {
         self.id().as_ptr().cast()

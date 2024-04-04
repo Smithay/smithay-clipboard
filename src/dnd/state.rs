@@ -52,6 +52,12 @@ impl<T> Default for DndState<T> {
 impl<T> DndState<T> {
     pub(crate) fn selected_action(&mut self, a: DndAction) {
         self.selected_action = a;
+        if let Some(tx) = self.sender.as_ref() {
+            _ = tx.send(DndEvent::Offer(
+                self.active_surface.as_ref().and_then(|(_, d)| d.as_ref().map(|d| d.id)),
+                OfferEvent::SelectedAction(a),
+            ));
+        }
     }
 }
 
@@ -267,10 +273,12 @@ where
                 _ = self.user_selected_action(a);
             },
             DndRequest::DndEnd => {
+                if let Some(s) = self.dnd_state.icon_surface.take() {
+                    _ = s.destroy();
+                }
                 self.dnd_state.source_content = None;
                 self.dnd_state.dnd_source = None;
                 self.pool.remove(&0);
-                self.dnd_state.icon_surface = None;
             },
             DndRequest::Peek(mime_type) => {
                 if let Err(err) = self.load_dnd(mime_type, true) {

@@ -254,7 +254,11 @@ where
         match r {
             DndRequest::InitDnd(sender) => self.dnd_state.sender = Some(sender),
             DndRequest::Surface(s, dests) => {
-                self.dnd_state.destinations.insert(s.surface.id(), (s, dests));
+                if dests.is_empty() {
+                    self.dnd_state.destinations.remove(&s.surface.id());
+                } else {
+                    self.dnd_state.destinations.insert(s.surface.id(), (s, dests));
+                }
             },
             DndRequest::StartDnd { internal, source, icon, content, actions } => {
                 _ = self.start_dnd(internal, source, icon, content, actions);

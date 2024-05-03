@@ -17,7 +17,7 @@ rust-version = "1.65.0"
 libc = "0.2.149"
 sctk = { package = "smithay-client-toolkit", git = "https://github.com/Smithay/client-toolkit", default-features = false, features = [
     "calloop",
-] }
+], rev = "3bed072" }
 wayland-backend = { version = "0.3.3", default_features = false, features = [
     "client_system",
 ] }
@@ -28,7 +28,7 @@ dirs = "5.0.1"
 sctk = { package = "smithay-client-toolkit", git = "https://github.com/Smithay/client-toolkit", default-features = false, features = [
     "calloop",
     "xkbcommon",
-] }
+], rev = "3bed072" }
 thiserror = "1.0.57"
 url = "2.5.0"
 

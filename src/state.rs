@@ -16,6 +16,7 @@ use sctk::output::{OutputHandler, OutputState};
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
 use sctk::primary_selection::selection::{PrimarySelectionSource, PrimarySelectionSourceHandler};
 use sctk::primary_selection::PrimarySelectionManagerState;
+use sctk::reexports::client::protocol::wl_output::WlOutput;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
@@ -666,6 +667,24 @@ impl<T: 'static + Clone> CompositorHandler for State<T> {
         _qh: &QueueHandle<Self>,
         _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
         _time: u32,
+    ) {
+    }
+
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
     ) {
     }
 }

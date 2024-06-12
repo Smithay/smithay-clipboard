@@ -1,24 +1,31 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::marker::PhantomData;
 use std::mem;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
+use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferError, DataOfferHandler, DragOffer};
 use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
+use sctk::output::{OutputHandler, OutputState};
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
 use sctk::primary_selection::selection::{PrimarySelectionSource, PrimarySelectionSourceHandler};
 use sctk::primary_selection::PrimarySelectionManagerState;
+use sctk::reexports::client::protocol::wl_output::WlOutput;
+use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
 use sctk::seat::{Capability, SeatHandler, SeatState};
+use sctk::shm::multi::MultiPool;
+use sctk::shm::{Shm, ShmHandler};
 use sctk::{
-    delegate_data_device, delegate_pointer, delegate_primary_selection, delegate_registry,
-    delegate_seat, registry_handlers,
+    delegate_compositor, delegate_data_device, delegate_output, delegate_pointer,
+    delegate_primary_selection, delegate_registry, delegate_seat, delegate_shm, registry_handlers,
 };
 
 use sctk::reexports::calloop::{LoopHandle, PostAction};
@@ -36,38 +43,50 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 };
 use wayland_backend::client::ObjectId;
 
-use crate::mime::{normalize_to_lf, MimeType, ALLOWED_MIME_TYPES};
+use crate::dnd::state::DndState;
+use crate::dnd::{DndEvent, DndSurface};
+use crate::mime::{AsMimeTypes, MimeType};
+use crate::text::Text;
 
-pub struct State {
+pub struct State<T> {
     pub primary_selection_manager_state: Option<PrimarySelectionManagerState>,
     pub data_device_manager_state: Option<DataDeviceManagerState>,
-    pub reply_tx: Sender<Result<String>>,
+    pub reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
     pub exit: bool,
 
     registry_state: RegistryState,
-    seat_state: SeatState,
+    pub(crate) seat_state: SeatState,
 
-    seats: HashMap<ObjectId, ClipboardSeatState>,
+    pub(crate) seats: HashMap<ObjectId, ClipboardSeatState>,
     /// The latest seat which got an event.
-    latest_seat: Option<ObjectId>,
+    pub(crate) latest_seat: Option<ObjectId>,
 
-    loop_handle: LoopHandle<'static, Self>,
-    queue_handle: QueueHandle<Self>,
+    pub(crate) loop_handle: LoopHandle<'static, Self>,
+    pub(crate) queue_handle: QueueHandle<Self>,
 
     primary_sources: Vec<PrimarySelectionSource>,
-    primary_selection_content: Rc<[u8]>,
+    primary_selection_content: Box<dyn AsMimeTypes>,
+    primary_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
 
     data_sources: Vec<CopyPasteSource>,
-    data_selection_content: Rc<[u8]>,
+    data_selection_content: Box<dyn AsMimeTypes>,
+    data_selection_mime_types: Rc<Cow<'static, [MimeType]>>,
+    #[cfg(feature = "dnd")]
+    pub(crate) dnd_state: crate::dnd::state::DndState<T>,
+    pub(crate) compositor_state: CompositorState,
+    output_state: OutputState,
+    pub(crate) shm: Shm,
+    pub(crate) pool: MultiPool<u8>,
+    _phantom: PhantomData<T>,
 }
 
-impl State {
+impl<T: 'static + Clone> State<T> {
     #[must_use]
     pub fn new(
         globals: &GlobalList,
         queue_handle: &QueueHandle<Self>,
         loop_handle: LoopHandle<'static, Self>,
-        reply_tx: Sender<Result<String>>,
+        reply_tx: Sender<Result<(Vec<u8>, MimeType)>>,
     ) -> Option<Self> {
         let mut seats = HashMap::new();
 
@@ -80,6 +99,11 @@ impl State {
             return None;
         }
 
+        let compositor_state =
+            CompositorState::bind(globals, queue_handle).expect("wl_compositor not available");
+        let output_state = OutputState::new(globals, queue_handle);
+        let shm = Shm::bind(globals, queue_handle).expect("wl_shm not available");
+
         let seat_state = SeatState::new(globals, queue_handle);
         for seat in seat_state.seats() {
             seats.insert(seat.id(), Default::default());
@@ -87,8 +111,8 @@ impl State {
 
         Some(Self {
             registry_state: RegistryState::new(globals),
-            primary_selection_content: Rc::from([]),
-            data_selection_content: Rc::from([]),
+            primary_selection_content: Box::new(Text(String::new())),
+            data_selection_content: Box::new(Text(String::new())),
             queue_handle: queue_handle.clone(),
             primary_selection_manager_state,
             primary_sources: Vec::new(),
@@ -100,13 +124,22 @@ impl State {
             seat_state,
             reply_tx,
             seats,
+            primary_selection_mime_types: Rc::new(Default::default()),
+            data_selection_mime_types: Rc::new(Default::default()),
+            #[cfg(feature = "dnd")]
+            dnd_state: DndState::default(),
+            _phantom: PhantomData,
+            compositor_state,
+            output_state,
+            pool: MultiPool::new(&shm).expect("Failed to create memory pool."),
+            shm,
         })
     }
 
     /// Store selection for the given target.
     ///
     /// Selection source is only created when `Some(())` is returned.
-    pub fn store_selection(&mut self, ty: SelectionTarget, contents: String) -> Option<()> {
+    pub fn store_selection(&mut self, ty: Target, contents: Box<dyn AsMimeTypes>) -> Option<()> {
         let latest = self.latest_seat.as_ref()?;
         let seat = self.seats.get_mut(latest)?;
 
@@ -114,22 +147,22 @@ impl State {
             return None;
         }
 
-        let contents = Rc::from(contents.into_bytes());
-
         match ty {
-            SelectionTarget::Clipboard => {
+            Target::Clipboard => {
                 let mgr = self.data_device_manager_state.as_ref()?;
+                let mime_types = contents.available();
                 self.data_selection_content = contents;
-                let source =
-                    mgr.create_copy_paste_source(&self.queue_handle, ALLOWED_MIME_TYPES.iter());
+                let source = mgr.create_copy_paste_source(&self.queue_handle, mime_types.iter());
+                self.data_selection_mime_types = Rc::new(mime_types);
                 source.set_selection(seat.data_device.as_ref().unwrap(), seat.latest_serial);
                 self.data_sources.push(source);
             },
-            SelectionTarget::Primary => {
+            Target::Primary => {
                 let mgr = self.primary_selection_manager_state.as_ref()?;
+                let mime_types = contents.available();
                 self.primary_selection_content = contents;
-                let source =
-                    mgr.create_selection_source(&self.queue_handle, ALLOWED_MIME_TYPES.iter());
+                let source = mgr.create_selection_source(&self.queue_handle, mime_types.iter());
+                self.primary_selection_mime_types = Rc::new(mime_types);
                 source.set_selection(seat.primary_device.as_ref().unwrap(), seat.latest_serial);
                 self.primary_sources.push(source);
             },
@@ -138,8 +171,8 @@ impl State {
         Some(())
     }
 
-    /// Load selection for the given target.
-    pub fn load_selection(&mut self, ty: SelectionTarget) -> Result<()> {
+    /// Load data for the given target.
+    pub fn load(&mut self, ty: Target, allowed_mime_types: &[MimeType]) -> Result<()> {
         let latest = self
             .latest_seat
             .as_ref()
@@ -153,16 +186,17 @@ impl State {
             return Err(Error::new(ErrorKind::Other, "client doesn't have focus"));
         }
 
-        let (read_pipe, mime_type) = match ty {
-            SelectionTarget::Clipboard => {
+        let (read_pipe, mut mime_type) = match ty {
+            Target::Clipboard => {
                 let selection = seat
                     .data_device
                     .as_ref()
                     .and_then(|data| data.data().selection_offer())
                     .ok_or_else(|| Error::new(ErrorKind::Other, "selection is empty"))?;
 
-                let mime_type =
-                    selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
+                let mime_type = selection
+                    .with_mime_types(|offered| MimeType::find_allowed(offered, allowed_mime_types))
+                    .ok_or_else(|| {
                         Error::new(ErrorKind::NotFound, "supported mime-type is not found")
                     })?;
 
@@ -176,15 +210,16 @@ impl State {
                     mime_type,
                 )
             },
-            SelectionTarget::Primary => {
+            Target::Primary => {
                 let selection = seat
                     .primary_device
                     .as_ref()
                     .and_then(|data| data.data().selection_offer())
                     .ok_or_else(|| Error::new(ErrorKind::Other, "selection is empty"))?;
 
-                let mime_type =
-                    selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
+                let mime_type = selection
+                    .with_mime_types(|offered| MimeType::find_allowed(offered, allowed_mime_types))
+                    .ok_or_else(|| {
                         Error::new(ErrorKind::NotFound, "supported mime-type is not found")
                     })?;
 
@@ -204,26 +239,9 @@ impl State {
             loop {
                 match file.read(&mut reader_buffer) {
                     Ok(0) => {
-                        let utf8 = String::from_utf8_lossy(&content);
-                        let content = match utf8 {
-                            Cow::Borrowed(_) => {
-                                // Don't clone the read data.
-                                let mut to_send = Vec::new();
-                                mem::swap(&mut content, &mut to_send);
-                                String::from_utf8(to_send).unwrap()
-                            },
-                            Cow::Owned(content) => content,
-                        };
-
-                        // Post-process the content according to mime type.
-                        let content = match mime_type {
-                            MimeType::TextPlainUtf8 | MimeType::TextPlain => {
-                                normalize_to_lf(content)
-                            },
-                            MimeType::Utf8String => content,
-                        };
-
-                        let _ = state.reply_tx.send(Ok(content));
+                        let _ = state
+                            .reply_tx
+                            .send(Ok((mem::take(&mut content), mem::take(&mut mime_type))));
                         break PostAction::Remove;
                     },
                     Ok(n) => content.extend_from_slice(&reader_buffer[..n]),
@@ -239,11 +257,13 @@ impl State {
         Ok(())
     }
 
-    fn send_request(&mut self, ty: SelectionTarget, write_pipe: WritePipe, mime: String) {
-        // We can only send strings, so don't do anything with the mime-type.
-        if MimeType::find_allowed(&[mime]).is_none() {
+    fn send_request(&mut self, ty: Target, write_pipe: WritePipe, mime: String) {
+        let Some(mime_type) = MimeType::find_allowed(&[mime], match ty {
+            Target::Clipboard => &self.data_selection_mime_types,
+            Target::Primary => &self.primary_selection_mime_types,
+        }) else {
             return;
-        }
+        };
 
         // Mark FD as non-blocking so we won't block ourselves.
         unsafe {
@@ -255,8 +275,12 @@ impl State {
         // Don't access the content on the state directly, since it could change during
         // the send.
         let contents = match ty {
-            SelectionTarget::Clipboard => self.data_selection_content.clone(),
-            SelectionTarget::Primary => self.primary_selection_content.clone(),
+            Target::Clipboard => self.data_selection_content.as_bytes(&mime_type),
+            Target::Primary => self.primary_selection_content.as_bytes(&mime_type),
+        };
+
+        let Some(contents) = contents else {
+            return;
         };
 
         let mut written = 0;
@@ -277,7 +301,7 @@ impl State {
     }
 }
 
-impl SeatHandler for State {
+impl<T: 'static + Clone> SeatHandler for State<T> {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
@@ -360,7 +384,7 @@ impl SeatHandler for State {
     }
 }
 
-impl PointerHandler for State {
+impl<T: 'static + Clone> PointerHandler for State<T> {
     fn pointer_frame(
         &mut self,
         _: &Connection,
@@ -394,33 +418,84 @@ impl PointerHandler for State {
     }
 }
 
-impl DataDeviceHandler for State {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+impl<T: 'static + Clone> DataDeviceHandler for State<T>
+where
+    DndSurface<T>: Clone,
+{
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        wl_data_device: &WlDataDevice,
+        x: f64,
+        y: f64,
+        surface: &WlSurface,
+    ) {
+        #[cfg(feature = "dnd")]
+        self.offer_enter(x, y, surface, wl_data_device);
+    }
 
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        #[cfg(feature = "dnd")]
+        self.offer_leave();
+    }
 
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn motion(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        wl_data_device: &WlDataDevice,
+        x: f64,
+        y: f64,
+    ) {
+        #[cfg(feature = "dnd")]
+        self.offer_motion(x, y, wl_data_device);
+    }
 
-    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, d: &WlDataDevice) {
+        #[cfg(feature = "dnd")]
+        self.offer_drop(d)
+    }
 
     // The selection is finished and ready to be used.
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 }
 
-impl DataSourceHandler for State {
+impl<T: 'static + Clone> DataSourceHandler for State<T> {
     fn send_request(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlDataSource,
+        _source: &WlDataSource,
         mime: String,
         write_pipe: WritePipe,
     ) {
-        self.send_request(SelectionTarget::Clipboard, write_pipe, mime)
+        #[cfg(feature = "dnd")]
+        if self
+            .dnd_state
+            .dnd_source
+            .as_ref()
+            .map(|my_source| my_source.inner() == _source)
+            .unwrap_or_default()
+        {
+            self.send_dnd_request(write_pipe, mime);
+            return;
+        }
+        self.send_request(Target::Clipboard, write_pipe, mime)
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, deleted: &WlDataSource) {
-        self.data_sources.retain(|source| source.inner() != deleted)
+        self.data_sources.retain(|source| source.inner() != deleted);
+        #[cfg(feature = "dnd")]
+        {
+            self.dnd_state.source_content = None;
+            self.dnd_state.dnd_source = None;
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Cancelled));
+            }
+            _ = self.pool.remove(&0);
+            self.dnd_state.icon_surface = None;
+        }
     }
 
     fn accept_mime(
@@ -428,18 +503,51 @@ impl DataSourceHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &WlDataSource,
-        _: Option<String>,
+        m: Option<String>,
     ) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Mime(
+                    m.map(|s| MimeType::from(Cow::Owned(s))),
+                )));
+            }
+        }
     }
 
-    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Dropped))
+            }
+            _ = self.pool.remove(&0);
+            self.dnd_state.icon_surface = None;
+        }
+    }
 
-    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, a: DndAction) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Action(a)))
+            }
+        }
+    }
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        #[cfg(feature = "dnd")]
+        {
+            self.dnd_state.source_content = None;
+            self.dnd_state.dnd_source = None;
+            if let Some(s) = self.dnd_state.sender.as_ref() {
+                _ = s.send(DndEvent::Source(crate::dnd::SourceEvent::Finished));
+            }
+        }
+    }
 }
 
-impl DataOfferHandler for State {
+impl<T: 'static + Clone> DataOfferHandler for State<T> {
     fn source_actions(
         &mut self,
         _: &Connection,
@@ -454,12 +562,14 @@ impl DataOfferHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &mut DragOffer,
-        _: DndAction,
+        action: DndAction,
     ) {
+        #[cfg(feature = "dnd")]
+        self.dnd_state.selected_action(action);
     }
 }
 
-impl ProvidesRegistryState for State {
+impl<T: 'static + Clone> ProvidesRegistryState for State<T> {
     registry_handlers![SeatState];
 
     fn registry(&mut self) -> &mut RegistryState {
@@ -467,7 +577,7 @@ impl ProvidesRegistryState for State {
     }
 }
 
-impl PrimarySelectionDeviceHandler for State {
+impl<T: 'static + Clone> PrimarySelectionDeviceHandler for State<T> {
     fn selection(
         &mut self,
         _: &Connection,
@@ -477,7 +587,7 @@ impl PrimarySelectionDeviceHandler for State {
     }
 }
 
-impl PrimarySelectionSourceHandler for State {
+impl<T: 'static + Clone> PrimarySelectionSourceHandler for State<T> {
     fn send_request(
         &mut self,
         _: &Connection,
@@ -486,7 +596,7 @@ impl PrimarySelectionSourceHandler for State {
         mime: String,
         write_pipe: WritePipe,
     ) {
-        self.send_request(SelectionTarget::Primary, write_pipe, mime);
+        self.send_request(Target::Primary, write_pipe, mime);
     }
 
     fn cancelled(
@@ -499,14 +609,14 @@ impl PrimarySelectionSourceHandler for State {
     }
 }
 
-impl Dispatch<WlKeyboard, ObjectId, State> for State {
+impl<T: 'static + Clone> Dispatch<WlKeyboard, ObjectId, State<T>> for State<T> {
     fn event(
-        state: &mut State,
+        state: &mut State<T>,
         _: &WlKeyboard,
         event: <WlKeyboard as sctk::reexports::client::Proxy>::Event,
         data: &ObjectId,
         _: &Connection,
-        _: &QueueHandle<State>,
+        _: &QueueHandle<State<T>>,
     ) {
         use sctk::reexports::client::protocol::wl_keyboard::Event as WlKeyboardEvent;
         let seat_state = match state.seats.get_mut(data) {
@@ -532,14 +642,100 @@ impl Dispatch<WlKeyboard, ObjectId, State> for State {
     }
 }
 
-delegate_seat!(State);
-delegate_pointer!(State);
-delegate_data_device!(State);
-delegate_primary_selection!(State);
-delegate_registry!(State);
+impl<T: 'static + Clone> CompositorHandler for State<T> {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
+        _new_transform: sctk::reexports::client::protocol::wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &sctk::reexports::client::protocol::wl_surface::WlSurface,
+        _time: u32,
+    ) {
+    }
+
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
+}
+
+impl<T: 'static + Clone> OutputHandler for State<T> {
+    fn output_state(&mut self) -> &mut sctk::output::OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: sctk::reexports::client::protocol::wl_output::WlOutput,
+    ) {
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: sctk::reexports::client::protocol::wl_output::WlOutput,
+    ) {
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: sctk::reexports::client::protocol::wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl<T: 'static + Clone> ShmHandler for State<T> {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+delegate_compositor!(@<T: 'static + Clone> State<T>);
+delegate_output!(@<T: 'static + Clone> State<T>);
+delegate_shm!(@<T: 'static + Clone> State<T>);
+delegate_seat!(@<T: 'static + Clone> State<T>);
+delegate_pointer!(@<T: 'static + Clone> State<T>);
+delegate_data_device!(@<T: 'static + Clone> State<T>);
+delegate_primary_selection!(@<T: 'static + Clone> State<T>);
+delegate_registry!(@<T: 'static + Clone> State<T>);
 
 #[derive(Debug, Clone, Copy)]
-pub enum SelectionTarget {
+pub enum Target {
     /// The target is clipboard selection.
     Clipboard,
     /// The target is primary selection.
@@ -547,15 +743,15 @@ pub enum SelectionTarget {
 }
 
 #[derive(Debug, Default)]
-struct ClipboardSeatState {
+pub(crate) struct ClipboardSeatState {
     keyboard: Option<WlKeyboard>,
     pointer: Option<WlPointer>,
-    data_device: Option<DataDevice>,
+    pub(crate) data_device: Option<DataDevice>,
     primary_device: Option<PrimarySelectionDevice>,
-    has_focus: bool,
+    pub(crate) has_focus: bool,
 
     /// The latest serial used to set the selection content.
-    latest_serial: u32,
+    pub(crate) latest_serial: u32,
 }
 
 impl Drop for ClipboardSeatState {
@@ -574,7 +770,7 @@ impl Drop for ClipboardSeatState {
     }
 }
 
-unsafe fn set_non_blocking(raw_fd: RawFd) -> std::io::Result<()> {
+pub(crate) unsafe fn set_non_blocking(raw_fd: RawFd) -> std::io::Result<()> {
     let flags = libc::fcntl(raw_fd, libc::F_GETFL);
 
     if flags < 0 {

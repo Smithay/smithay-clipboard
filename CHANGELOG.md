@@ -1,5 +1,9 @@
 # Change Log
 
+## 0.7.2
+
+- Update SCTK to 0.19
+
 ## 0.7.1
 
 - Don't panic on display disconnect

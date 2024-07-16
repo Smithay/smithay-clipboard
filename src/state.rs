@@ -29,6 +29,7 @@ use sctk::reexports::client::protocol::wl_data_source::WlDataSource;
 use sctk::reexports::client::protocol::wl_keyboard::WlKeyboard;
 use sctk::reexports::client::protocol::wl_pointer::WlPointer;
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
+use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
 use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
@@ -395,11 +396,20 @@ impl PointerHandler for State {
 }
 
 impl DataDeviceHandler for State {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataDevice,
+        _: f64,
+        _: f64,
+        _: &WlSurface,
+    ) {
+    }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
 
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 

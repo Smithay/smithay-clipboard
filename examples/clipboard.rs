@@ -101,20 +101,38 @@ struct SimpleWindow {
 impl CompositorHandler for SimpleWindow {
     fn scale_factor_changed(
         &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: i32,
     ) {
         // Not needed for this example.
     }
 
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+
     fn transform_changed(
         &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: wl_output::Transform,
     ) {
         // Not needed for this example.
     }
@@ -317,8 +335,9 @@ impl KeyboardHandler for SimpleWindow {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
-        _serial: u32,
-        _modifiers: Modifiers,
+        _: u32,
+        _: Modifiers,
+        _: u32,
     ) {
     }
 }

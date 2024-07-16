@@ -46,6 +46,7 @@ jobs:
         run: cargo test --verbose
 
       - name: Clippy
+        if: matrix.toolchain == 'stable'
         run: cargo clippy -- -D warnings
 
       - name: Check documentation

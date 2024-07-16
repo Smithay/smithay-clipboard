@@ -12,11 +12,11 @@ rust-version = "1.65.0"
 
 [dependencies]
 libc = "0.2.149"
-sctk = { package = "smithay-client-toolkit", version = "0.18.0", default-features = false, features = ["calloop"] }
-wayland-backend = { version = "0.3.0", default_features = false, features = ["client_system"] }
+sctk = { package = "smithay-client-toolkit", version = "0.19.2", default-features = false, features = ["calloop"] }
+wayland-backend = { version = "0.3.5", default-features = false, features = ["client_system"] }
 
 [dev-dependencies]
-sctk = { package = "smithay-client-toolkit", version = "0.18.0", default-features = false, features = ["calloop", "xkbcommon"] }
+sctk = { package = "smithay-client-toolkit", version = "0.19.2", default-features = false, features = ["calloop", "xkbcommon"] }
 
 [features]
 default = ["dlopen"]

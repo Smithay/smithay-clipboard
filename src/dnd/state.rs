@@ -119,14 +119,37 @@ where
                     }
                     return (s.clone(), None);
                 };
-                if let (Some((action, preferred_action)), Some(mime_type), Some(dnd_state)) =
-                    (actions, mime, dnd_state.as_ref())
-                {
-                    dnd_state.set_actions(action, preferred_action);
-                    self.dnd_state.selected_mime = Some(mime_type.clone());
-                    dnd_state
-                        .accept_mime_type(self.dnd_state.accept_ctr, Some(mime_type.to_string()));
-                    self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
+                if !had_dest.is_some_and(|old_id| old_id == dest.id) {
+                    if let (Some((action, preferred_action)), Some(mime_type), Some(dnd_state)) =
+                        (actions, mime, dnd_state.as_ref())
+                    {
+                        if let Some((tx, old_id)) = self.dnd_state.sender.as_ref().zip(had_dest) {
+                            _ = tx.send(DndEvent::Offer(
+                                Some(old_id),
+                                super::OfferEvent::LeaveDestination,
+                            ));
+                        }
+                        if let Some(tx) = self.dnd_state.sender.as_ref() {
+                            _ = tx.send(DndEvent::Offer(Some(dest.id), OfferEvent::Enter {
+                                x,
+                                y,
+                                surface: s.s.clone(),
+                                mime_types: dest.mime_types.clone(),
+                            }));
+
+                            _ = tx.send(DndEvent::Offer(
+                                Some(dest.id),
+                                OfferEvent::SelectedAction(self.dnd_state.selected_action),
+                            ));
+                        }
+                        dnd_state.set_actions(action, preferred_action);
+                        self.dnd_state.selected_mime = Some(mime_type.clone());
+                        dnd_state.accept_mime_type(
+                            self.dnd_state.accept_ctr,
+                            Some(mime_type.to_string()),
+                        );
+                        self.dnd_state.accept_ctr = self.dnd_state.accept_ctr.wrapping_add(1);
+                    }
                 }
                 (s.clone(), Some(dest))
             });
@@ -218,12 +241,7 @@ where
     }
 
     pub(crate) fn offer_motion(&mut self, x: f64, y: f64, wl_data_device: &WlDataDevice) {
-        let Some((surface, dest)) = self
-            .dnd_state
-            .active_surface
-            .clone()
-            .map(|(s, dest)| (s, dest.filter(|d| d.rectangle.contains(x, y))))
-        else {
+        let Some(surface) = self.dnd_state.active_surface.clone().map(|(s, _)| s) else {
             return;
         };
         let Some(data_device) = self
@@ -238,9 +256,7 @@ where
             // Ignore cancelled internal DnD
             return;
         }
-        if dest.is_none() {
-            self.update_active_surface(&surface.surface, x, y, drag_offer.as_ref());
-        }
+        self.update_active_surface(&surface.surface, x, y, drag_offer.as_ref());
         let id = self.cur_id();
         if let Some(tx) = self.dnd_state.sender.as_ref() {
             _ = tx.send(DndEvent::Offer(id, super::OfferEvent::Motion { x, y }));
@@ -368,7 +384,6 @@ where
             surface.attach(Some(wl_buffer), 0, 0);
             surface.commit();
 
-            dbg!("attached buffer, damaged surface.");
             self.dnd_state.icon_surface = Some(surface);
         }
 

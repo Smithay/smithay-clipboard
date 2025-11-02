@@ -1,0 +1,1 @@
+rd_("Aasmithay_clipboard")

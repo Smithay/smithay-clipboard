@@ -1,1 +1,0 @@
-searchState.loadedDescShard("smithay_clipboard", 0, "Smithay Clipboard\nAccess to a Wayland clipboard.\nReturns the argument unchanged.\nCalls <code>U::from(self)</code>.\nLoad clipboard data.\nLoad primary clipboard data.\nCreates new clipboard which will be running on its own …\nStore to a clipboard.\nStore to a primary clipboard.")

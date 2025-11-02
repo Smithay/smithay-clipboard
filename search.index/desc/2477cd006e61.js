@@ -1,0 +1,1 @@
+rd_("CjCreates new clipboard which will be running on its own \xe2\x80\xa6AoReturns the argument unchanged.BaCalls <code>U::from(self)</code>.AdLoad clipboard data.AeStore to a clipboard.AnAccess to a Wayland clipboard.AlLoad primary clipboard data.AmStore to a primary clipboard.AaSmithay Clipboard")

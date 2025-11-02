@@ -10,9 +10,9 @@ use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferError, DataOfferHandler, DragOffer};
 use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
+use sctk::primary_selection::PrimarySelectionManagerState;
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
 use sctk::primary_selection::selection::{PrimarySelectionSource, PrimarySelectionSourceHandler};
-use sctk::primary_selection::PrimarySelectionManagerState;
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
 use sctk::seat::{Capability, SeatHandler, SeatState};
@@ -37,7 +37,7 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 };
 use wayland_backend::client::ObjectId;
 
-use crate::mime::{normalize_to_lf, MimeType, ALLOWED_MIME_TYPES};
+use crate::mime::{ALLOWED_MIME_TYPES, MimeType, normalize_to_lf};
 
 pub struct State {
     pub primary_selection_manager_state: Option<PrimarySelectionManagerState>,
@@ -70,6 +70,8 @@ impl State {
         loop_handle: LoopHandle<'static, Self>,
         reply_tx: Sender<Result<String>>,
     ) -> Option<Self> {
+        // NOTE: while it's mutable, it's not part of the hash compute.
+        #[allow(clippy::mutable_key_type)]
         let mut seats = HashMap::new();
 
         let data_device_manager_state = DataDeviceManagerState::bind(globals, queue_handle).ok();
@@ -144,14 +146,11 @@ impl State {
         let latest = self
             .latest_seat
             .as_ref()
-            .ok_or_else(|| Error::new(ErrorKind::Other, "no events received on any seat"))?;
-        let seat = self
-            .seats
-            .get_mut(latest)
-            .ok_or_else(|| Error::new(ErrorKind::Other, "active seat lost"))?;
+            .ok_or_else(|| Error::other("no events received on any seat"))?;
+        let seat = self.seats.get_mut(latest).ok_or_else(|| Error::other("active seat lost"))?;
 
         if !seat.has_focus {
-            return Err(Error::new(ErrorKind::Other, "client doesn't have focus"));
+            return Err(Error::other("client doesn't have focus"));
         }
 
         let (read_pipe, mime_type) = match ty {
@@ -160,7 +159,7 @@ impl State {
                     .data_device
                     .as_ref()
                     .and_then(|data| data.data().selection_offer())
-                    .ok_or_else(|| Error::new(ErrorKind::Other, "selection is empty"))?;
+                    .ok_or_else(|| Error::other("selection is empty"))?;
 
                 let mime_type =
                     selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
@@ -169,9 +168,7 @@ impl State {
 
                 (
                     selection.receive(mime_type.to_string()).map_err(|err| match err {
-                        DataOfferError::InvalidReceive => {
-                            Error::new(ErrorKind::Other, "offer is not ready yet")
-                        },
+                        DataOfferError::InvalidReceive => Error::other("offer is not ready yet"),
                         DataOfferError::Io(err) => err,
                     })?,
                     mime_type,
@@ -182,7 +179,7 @@ impl State {
                     .primary_device
                     .as_ref()
                     .and_then(|data| data.data().selection_offer())
-                    .ok_or_else(|| Error::new(ErrorKind::Other, "selection is empty"))?;
+                    .ok_or_else(|| Error::other("selection is empty"))?;
 
                 let mime_type =
                     selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
@@ -194,9 +191,7 @@ impl State {
         };
 
         // Mark FD as non-blocking so we won't block ourselves.
-        unsafe {
-            set_non_blocking(read_pipe.as_raw_fd())?;
-        }
+        set_non_blocking(read_pipe.as_raw_fd())?;
 
         let mut reader_buffer = [0; 4096];
         let mut content = Vec::new();
@@ -247,10 +242,8 @@ impl State {
         }
 
         // Mark FD as non-blocking so we won't block ourselves.
-        unsafe {
-            if set_non_blocking(write_pipe.as_raw_fd()).is_err() {
-                return;
-            }
+        if set_non_blocking(write_pipe.as_raw_fd()).is_err() {
+            return;
         }
 
         // Don't access the content on the state directly, since it could change during
@@ -584,14 +577,14 @@ impl Drop for ClipboardSeatState {
     }
 }
 
-unsafe fn set_non_blocking(raw_fd: RawFd) -> std::io::Result<()> {
-    let flags = libc::fcntl(raw_fd, libc::F_GETFL);
+fn set_non_blocking(raw_fd: RawFd) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
 
     if flags < 0 {
         return Err(std::io::Error::last_os_error());
     }
 
-    let result = libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+    let result = unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
     if result < 0 {
         return Err(std::io::Error::last_os_error());
     }

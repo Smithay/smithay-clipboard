@@ -9,8 +9,8 @@ use std::io::Result;
 use std::sync::mpsc::{self, Receiver};
 
 use sctk::reexports::calloop::channel::{self, Sender};
-use sctk::reexports::client::backend::Backend;
 use sctk::reexports::client::Connection;
+use sctk::reexports::client::backend::Backend;
 
 mod mime;
 mod state;
@@ -57,7 +57,7 @@ impl Clipboard {
         } else {
             // The clipboard thread is dead, however we shouldn't crash downstream, so
             // propogating an error.
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
+            Err(std::io::Error::other("clipboard is dead."))
         }
     }
 
@@ -80,7 +80,7 @@ impl Clipboard {
         } else {
             // The clipboard thread is dead, however we shouldn't crash downstream, so
             // propogating an error.
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "clipboard is dead."))
+            Err(std::io::Error::other("clipboard is dead."))
         }
     }
 

@@ -10,11 +10,11 @@ use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
-use sctk::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers};
+use sctk::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
 use sctk::seat::{Capability, SeatHandler, SeatState};
-use sctk::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
-use sctk::shell::xdg::XdgShell;
 use sctk::shell::WaylandSurface;
+use sctk::shell::xdg::XdgShell;
+use sctk::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
 use sctk::shm::slot::{Buffer, SlotPool};
 use sctk::shm::{Shm, ShmHandler};
 use sctk::{
@@ -337,8 +337,20 @@ impl KeyboardHandler for SimpleWindow {
         _: &wl_keyboard::WlKeyboard,
         _: u32,
         _: Modifiers,
+        _: RawModifiers,
         _: u32,
     ) {
+    }
+
+    fn repeat_key(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        keyboard: &wl_keyboard::WlKeyboard,
+        serial: u32,
+        event: KeyEvent,
+    ) {
+        self.press_key(conn, qh, keyboard, serial, event);
     }
 }
 

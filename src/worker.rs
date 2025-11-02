@@ -1,11 +1,11 @@
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, Result};
 use std::sync::mpsc::Sender;
 
 use sctk::reexports::calloop::channel::Channel;
-use sctk::reexports::calloop::{channel, EventLoop};
+use sctk::reexports::calloop::{EventLoop, channel};
 use sctk::reexports::calloop_wayland_source::WaylandSource;
-use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::Connection;
+use sctk::reexports::client::globals::registry_queue_init;
 
 use crate::state::{SelectionTarget, State};
 
@@ -81,10 +81,9 @@ fn worker_impl(
                         }
                     },
                     Command::Load | Command::LoadPrimary => {
-                        let _ = state.reply_tx.send(Err(Error::new(
-                            ErrorKind::Other,
-                            "requested selection is not supported",
-                        )));
+                        let _ = state
+                            .reply_tx
+                            .send(Err(Error::other("requested selection is not supported")));
                     },
                     Command::Exit => state.exit = true,
                 }

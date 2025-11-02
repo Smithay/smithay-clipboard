@@ -1,5 +1,9 @@
 # Change Log
 
+## 0.7.3
+
+- Update SCTK to 0.20
+
 ## 0.7.2
 
 - Update SCTK to 0.19

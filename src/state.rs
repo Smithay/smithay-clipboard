@@ -1,6 +1,5 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::mem;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::rc::Rc;
@@ -37,12 +36,15 @@ use sctk::reexports::protocols::wp::primary_selection::zv1::client::{
 };
 use wayland_backend::client::ObjectId;
 
-use crate::mime::{ALLOWED_MIME_TYPES, MimeType, normalize_to_lf};
+use crate::data::ClipboardData;
+use crate::error::{ClipboardError, Result};
+use crate::mime::{find_preferred_mime, is_text_mime, normalize_to_lf};
+use crate::worker::Reply;
 
 pub struct State {
     pub primary_selection_manager_state: Option<PrimarySelectionManagerState>,
     pub data_device_manager_state: Option<DataDeviceManagerState>,
-    pub reply_tx: Sender<Result<String>>,
+    pub reply_tx: Sender<Result<Reply>>,
     pub exit: bool,
 
     registry_state: RegistryState,
@@ -56,10 +58,12 @@ pub struct State {
     queue_handle: QueueHandle<Self>,
 
     primary_sources: Vec<PrimarySelectionSource>,
-    primary_selection_content: Rc<[u8]>,
+    /// Maps MIME type -> data for primary selection (multi-format support).
+    primary_selection_data: Rc<HashMap<String, Vec<u8>>>,
 
     data_sources: Vec<CopyPasteSource>,
-    data_selection_content: Rc<[u8]>,
+    /// Maps MIME type -> data for clipboard (multi-format support).
+    data_selection_data: Rc<HashMap<String, Vec<u8>>>,
 }
 
 impl State {
@@ -68,7 +72,7 @@ impl State {
         globals: &GlobalList,
         queue_handle: &QueueHandle<Self>,
         loop_handle: LoopHandle<'static, Self>,
-        reply_tx: Sender<Result<String>>,
+        reply_tx: Sender<Result<Reply>>,
     ) -> Option<Self> {
         // NOTE: while it's mutable, it's not part of the hash compute.
         #[allow(clippy::mutable_key_type)]
@@ -90,8 +94,8 @@ impl State {
 
         Some(Self {
             registry_state: RegistryState::new(globals),
-            primary_selection_content: Rc::from([]),
-            data_selection_content: Rc::from([]),
+            primary_selection_data: Rc::new(HashMap::new()),
+            data_selection_data: Rc::new(HashMap::new()),
             queue_handle: queue_handle.clone(),
             primary_selection_manager_state,
             primary_sources: Vec::new(),
@@ -106,10 +110,17 @@ impl State {
         })
     }
 
-    /// Store selection for the given target.
+    /// Store selection for the given target with multi-format support.
+    ///
+    /// Each entry in `formats` is a tuple of (data, mime_types). The same data
+    /// will be offered for all MIME types in its associated list.
     ///
     /// Selection source is only created when `Some(())` is returned.
-    pub fn store_selection(&mut self, ty: SelectionTarget, contents: String) -> Option<()> {
+    pub fn store_selection(
+        &mut self,
+        ty: SelectionTarget,
+        formats: Vec<(Vec<u8>, Vec<String>)>,
+    ) -> Option<()> {
         let latest = self.latest_seat.as_ref()?;
         let seat = self.seats.get_mut(latest)?;
 
@@ -117,22 +128,36 @@ impl State {
             return None;
         }
 
-        let contents = Rc::from(contents.into_bytes());
+        // Build the MIME -> data mapping
+        let mut data_map = HashMap::new();
+        let mut all_mimes = Vec::new();
+        for (data, mimes) in formats {
+            for mime in mimes {
+                all_mimes.push(mime.clone());
+                data_map.insert(mime, data.clone());
+            }
+        }
+
+        let data_map = Rc::new(data_map);
 
         match ty {
             SelectionTarget::Clipboard => {
                 let mgr = self.data_device_manager_state.as_ref()?;
-                self.data_selection_content = contents;
-                let source =
-                    mgr.create_copy_paste_source(&self.queue_handle, ALLOWED_MIME_TYPES.iter());
+                self.data_selection_data = data_map;
+                let source = mgr.create_copy_paste_source(
+                    &self.queue_handle,
+                    all_mimes.iter().map(|s| s.as_str()),
+                );
                 source.set_selection(seat.data_device.as_ref().unwrap(), seat.latest_serial);
                 self.data_sources.push(source);
             },
             SelectionTarget::Primary => {
                 let mgr = self.primary_selection_manager_state.as_ref()?;
-                self.primary_selection_content = contents;
-                let source =
-                    mgr.create_selection_source(&self.queue_handle, ALLOWED_MIME_TYPES.iter());
+                self.primary_selection_data = data_map;
+                let source = mgr.create_selection_source(
+                    &self.queue_handle,
+                    all_mimes.iter().map(|s| s.as_str()),
+                );
                 source.set_selection(seat.primary_device.as_ref().unwrap(), seat.latest_serial);
                 self.primary_sources.push(source);
             },
@@ -141,17 +166,52 @@ impl State {
         Some(())
     }
 
-    /// Load selection for the given target.
-    pub fn load_selection(&mut self, ty: SelectionTarget) -> Result<()> {
-        let latest = self
-            .latest_seat
-            .as_ref()
-            .ok_or_else(|| Error::other("no events received on any seat"))?;
-        let seat = self.seats.get_mut(latest).ok_or_else(|| Error::other("active seat lost"))?;
+    /// Get available MIME types from the selection.
+    pub fn get_mime_types(&mut self, ty: SelectionTarget) -> Result<Vec<String>> {
+        let latest = self.latest_seat.as_ref().ok_or(ClipboardError::NoSeat)?;
+        let seat = self.seats.get_mut(latest).ok_or(ClipboardError::NoSeat)?;
 
         if !seat.has_focus {
-            return Err(Error::other("client doesn't have focus"));
+            return Err(ClipboardError::NoFocus);
         }
+
+        match ty {
+            SelectionTarget::Clipboard => {
+                let selection = seat
+                    .data_device
+                    .as_ref()
+                    .and_then(|data| data.data().selection_offer())
+                    .ok_or(ClipboardError::Empty)?;
+
+                Ok(selection.with_mime_types(|mimes| mimes.to_vec()))
+            },
+            SelectionTarget::Primary => {
+                let selection = seat
+                    .primary_device
+                    .as_ref()
+                    .and_then(|data| data.data().selection_offer())
+                    .ok_or(ClipboardError::Empty)?;
+
+                Ok(selection.with_mime_types(|mimes| mimes.to_vec()))
+            },
+        }
+    }
+
+    /// Load selection for the given target with preferred MIME types.
+    pub fn load_selection(
+        &mut self,
+        ty: SelectionTarget,
+        preferred_mimes: &[String],
+    ) -> Result<()> {
+        let latest = self.latest_seat.as_ref().ok_or(ClipboardError::NoSeat)?;
+        let seat = self.seats.get_mut(latest).ok_or(ClipboardError::NoSeat)?;
+
+        if !seat.has_focus {
+            return Err(ClipboardError::NoFocus);
+        }
+
+        // Convert preferred mimes to &str for matching
+        let preferred_refs: Vec<&str> = preferred_mimes.iter().map(|s| s.as_str()).collect();
 
         let (read_pipe, mime_type) = match ty {
             SelectionTarget::Clipboard => {
@@ -159,40 +219,44 @@ impl State {
                     .data_device
                     .as_ref()
                     .and_then(|data| data.data().selection_offer())
-                    .ok_or_else(|| Error::other("selection is empty"))?;
+                    .ok_or(ClipboardError::Empty)?;
 
-                let mime_type =
-                    selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
-                        Error::new(ErrorKind::NotFound, "supported mime-type is not found")
-                    })?;
+                let mime_type = selection
+                    .with_mime_types(|offered| find_preferred_mime(offered, &preferred_refs))
+                    .ok_or(ClipboardError::NoCompatibleMime)?
+                    .to_string();
 
-                (
-                    selection.receive(mime_type.to_string()).map_err(|err| match err {
-                        DataOfferError::InvalidReceive => Error::other("offer is not ready yet"),
-                        DataOfferError::Io(err) => err,
-                    })?,
-                    mime_type,
-                )
+                let pipe = selection.receive(mime_type.clone()).map_err(|err| match err {
+                    DataOfferError::InvalidReceive => {
+                        ClipboardError::Io(std::io::Error::other("offer is not ready yet"))
+                    },
+                    DataOfferError::Io(err) => ClipboardError::Io(err),
+                })?;
+
+                (pipe, mime_type)
             },
             SelectionTarget::Primary => {
                 let selection = seat
                     .primary_device
                     .as_ref()
                     .and_then(|data| data.data().selection_offer())
-                    .ok_or_else(|| Error::other("selection is empty"))?;
+                    .ok_or(ClipboardError::Empty)?;
 
-                let mime_type =
-                    selection.with_mime_types(MimeType::find_allowed).ok_or_else(|| {
-                        Error::new(ErrorKind::NotFound, "supported mime-type is not found")
-                    })?;
+                let mime_type = selection
+                    .with_mime_types(|offered| find_preferred_mime(offered, &preferred_refs))
+                    .ok_or(ClipboardError::NoCompatibleMime)?
+                    .to_string();
 
-                (selection.receive(mime_type.to_string())?, mime_type)
+                let pipe = selection.receive(mime_type.clone())?;
+
+                (pipe, mime_type)
             },
         };
 
         // Mark FD as non-blocking so we won't block ourselves.
         set_non_blocking(read_pipe.as_raw_fd())?;
 
+        let is_text = is_text_mime(&mime_type);
         let mut reader_buffer = [0; 4096];
         let mut content = Vec::new();
         let _ = self.loop_handle.insert_source(read_pipe, move |_, file, state| {
@@ -200,32 +264,23 @@ impl State {
             loop {
                 match file.read(&mut reader_buffer) {
                     Ok(0) => {
-                        let utf8 = String::from_utf8_lossy(&content);
-                        let content = match utf8 {
-                            Cow::Borrowed(_) => {
-                                // Don't clone the read data.
-                                let mut to_send = Vec::new();
-                                mem::swap(&mut content, &mut to_send);
-                                String::from_utf8(to_send).unwrap()
-                            },
-                            Cow::Owned(content) => content,
+                        // For text MIME types, normalize line endings
+                        let final_data = if is_text {
+                            let text = String::from_utf8_lossy(&content);
+                            let normalized = normalize_to_lf(text.into_owned());
+                            normalized.into_bytes()
+                        } else {
+                            mem::take(&mut content)
                         };
 
-                        // Post-process the content according to mime type.
-                        let content = match mime_type {
-                            MimeType::TextPlainUtf8 | MimeType::TextPlain => {
-                                normalize_to_lf(content)
-                            },
-                            MimeType::Utf8String => content,
-                        };
-
-                        let _ = state.reply_tx.send(Ok(content));
+                        let data = ClipboardData::new(mime_type.clone(), final_data);
+                        let _ = state.reply_tx.send(Ok(Reply::Data(data)));
                         break PostAction::Remove;
                     },
                     Ok(n) => content.extend_from_slice(&reader_buffer[..n]),
                     Err(err) if err.kind() == ErrorKind::WouldBlock => break PostAction::Continue,
                     Err(err) => {
-                        let _ = state.reply_tx.send(Err(err));
+                        let _ = state.reply_tx.send(Err(ClipboardError::Io(err)));
                         break PostAction::Remove;
                     },
                 };
@@ -236,22 +291,22 @@ impl State {
     }
 
     fn send_request(&mut self, ty: SelectionTarget, write_pipe: WritePipe, mime: String) {
-        // We can only send strings, so don't do anything with the mime-type.
-        if MimeType::find_allowed(&[mime]).is_none() {
-            return;
-        }
+        // Look up the data for this specific MIME type
+        let data_map = match ty {
+            SelectionTarget::Clipboard => self.data_selection_data.clone(),
+            SelectionTarget::Primary => self.primary_selection_data.clone(),
+        };
+
+        // Get the data for this MIME type
+        let contents: Rc<[u8]> = match data_map.get(&mime) {
+            Some(data) => Rc::from(data.clone().into_boxed_slice()),
+            None => return, // MIME type not offered
+        };
 
         // Mark FD as non-blocking so we won't block ourselves.
         if set_non_blocking(write_pipe.as_raw_fd()).is_err() {
             return;
         }
-
-        // Don't access the content on the state directly, since it could change during
-        // the send.
-        let contents = match ty {
-            SelectionTarget::Clipboard => self.data_selection_content.clone(),
-            SelectionTarget::Primary => self.primary_selection_content.clone(),
-        };
 
         let mut written = 0;
         let _ = self.loop_handle.insert_source(write_pipe, move |_, file, _| {

@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferError, DataOfferHandler, DragOffer};
-use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler};
+use sctk::data_device_manager::data_source::{CopyPasteSource, DataSourceHandler, DragSource};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
 use sctk::primary_selection::PrimarySelectionManagerState;
 use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
@@ -41,6 +41,17 @@ use crate::error::{ClipboardError, Result};
 use crate::mime::{find_preferred_mime, is_text_mime, normalize_to_lf};
 use crate::worker::Reply;
 
+#[cfg(feature = "dnd")]
+use crate::dnd::{
+    DndData, DndDestinationRectangle, Sender as DndSender,
+    state::{
+        DndDestinationState, DragOfferState,
+        handle_dnd_enter, handle_dnd_leave, handle_dnd_motion, handle_dnd_drop,
+        handle_dnd_selected_action, handle_source_action, handle_source_cancelled,
+        handle_source_dropped, handle_source_finished, handle_source_mime,
+    },
+};
+
 pub struct State {
     pub primary_selection_manager_state: Option<PrimarySelectionManagerState>,
     pub data_device_manager_state: Option<DataDeviceManagerState>,
@@ -64,6 +75,18 @@ pub struct State {
     data_sources: Vec<CopyPasteSource>,
     /// Maps MIME type -> data for clipboard (multi-format support).
     data_selection_data: Rc<HashMap<String, Vec<u8>>>,
+
+    // DnD-specific state (only available with the "dnd" feature)
+    #[cfg(feature = "dnd")]
+    pub dnd_destinations: DndDestinationState<WlSurface>,
+    #[cfg(feature = "dnd")]
+    pub dnd_sender: Option<Box<dyn DndSender<WlSurface> + Send>>,
+    #[cfg(feature = "dnd")]
+    pub dnd_source: Option<DragSource>,
+    #[cfg(feature = "dnd")]
+    pub dnd_source_data: Option<DndData>,
+    #[cfg(feature = "dnd")]
+    pub current_drag_offer: Option<DragOfferState>,
 }
 
 impl State {
@@ -107,6 +130,16 @@ impl State {
             seat_state,
             reply_tx,
             seats,
+            #[cfg(feature = "dnd")]
+            dnd_destinations: DndDestinationState { surfaces: HashMap::new(), current_rectangle: None },
+            #[cfg(feature = "dnd")]
+            dnd_sender: None,
+            #[cfg(feature = "dnd")]
+            dnd_source: None,
+            #[cfg(feature = "dnd")]
+            dnd_source_data: None,
+            #[cfg(feature = "dnd")]
+            current_drag_offer: None,
         })
     }
 
@@ -324,6 +357,142 @@ impl State {
             }
         });
     }
+
+    // ========================================================================
+    // DnD-specific methods (only available with the "dnd" feature)
+    // ========================================================================
+
+    /// Initialize DnD with an event sender.
+    #[cfg(feature = "dnd")]
+    pub fn init_dnd(&mut self, sender: Box<dyn DndSender<WlSurface> + Send>) {
+        self.dnd_sender = Some(sender);
+    }
+
+    /// Register a surface for receiving DnD offers.
+    #[cfg(feature = "dnd")]
+    pub fn register_dnd_destination(
+        &mut self,
+        surface: WlSurface,
+        rectangles: Vec<DndDestinationRectangle>,
+    ) {
+        if rectangles.is_empty() {
+            self.dnd_destinations.unregister(&surface);
+        } else {
+            self.dnd_destinations.register(&surface, surface.clone(), rectangles);
+        }
+    }
+
+    /// Start a DnD operation.
+    #[cfg(feature = "dnd")]
+    pub fn start_dnd(
+        &mut self,
+        source_surface: &WlSurface,
+        data: DndData,
+        actions: DndAction,
+        icon: Option<&WlSurface>,
+    ) -> Option<()> {
+        let latest = self.latest_seat.as_ref()?;
+        let seat = self.seats.get(latest)?;
+
+        let mgr = self.data_device_manager_state.as_ref()?;
+        let data_device = seat.data_device.as_ref()?;
+
+        // Create a drag source with the offered MIME types
+        let source = mgr.create_drag_and_drop_source(
+            &self.queue_handle,
+            data.mime_types.iter().map(|s| s.as_str()),
+            actions,
+        );
+
+        // Start the drag
+        source.start_drag(
+            data_device,
+            source_surface,
+            icon,
+            seat.latest_serial,
+        );
+
+        self.dnd_source = Some(source);
+        self.dnd_source_data = Some(data);
+
+        Some(())
+    }
+
+    /// End the current DnD operation.
+    #[cfg(feature = "dnd")]
+    pub fn end_dnd(&mut self) {
+        if let Some(source) = self.dnd_source.take() {
+            source.inner().destroy();
+        }
+        self.dnd_source_data = None;
+    }
+
+    /// Set the action for the current DnD offer.
+    #[cfg(feature = "dnd")]
+    pub fn set_dnd_action(&mut self, action: DndAction) {
+        if let Some(ref offer_state) = self.current_drag_offer {
+            // Only set if we have a valid preferred action
+            if action != DndAction::empty() {
+                offer_state.offer.set_actions(action, action);
+            }
+        }
+    }
+
+    /// Peek at the data of a DnD offer.
+    #[cfg(feature = "dnd")]
+    pub fn peek_dnd_offer(&mut self, mime_type: &str) -> Result<()> {
+        let offer_state = self.current_drag_offer.as_ref().ok_or(ClipboardError::Empty)?;
+
+        if !offer_state.mime_types.contains(&mime_type.to_string()) {
+            return Err(ClipboardError::NoCompatibleMime);
+        }
+
+        let read_pipe = offer_state.offer.receive(mime_type.to_string())?;
+
+        set_non_blocking(read_pipe.as_raw_fd())?;
+
+        let mime = mime_type.to_string();
+        let is_text = is_text_mime(&mime);
+        let mut reader_buffer = [0; 4096];
+        let mut content = Vec::new();
+
+        let _ = self.loop_handle.insert_source(read_pipe, move |_, file, state| {
+            let file = unsafe { file.get_mut() };
+            loop {
+                match file.read(&mut reader_buffer) {
+                    Ok(0) => {
+                        let final_data = if is_text {
+                            let text = String::from_utf8_lossy(&content);
+                            let normalized = normalize_to_lf(text.into_owned());
+                            normalized.into_bytes()
+                        } else {
+                            mem::take(&mut content)
+                        };
+
+                        let data = ClipboardData::new(mime.clone(), final_data);
+                        let _ = state.reply_tx.send(Ok(Reply::Data(data)));
+                        break PostAction::Remove;
+                    },
+                    Ok(n) => content.extend_from_slice(&reader_buffer[..n]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => break PostAction::Continue,
+                    Err(err) => {
+                        let _ = state.reply_tx.send(Err(ClipboardError::Io(err)));
+                        break PostAction::Remove;
+                    },
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Finish the DnD drop operation (accept the data).
+    #[cfg(feature = "dnd")]
+    pub fn finish_dnd(&mut self) {
+        if let Some(offer_state) = self.current_drag_offer.take() {
+            offer_state.offer.finish();
+        }
+    }
 }
 
 impl SeatHandler for State {
@@ -446,20 +615,119 @@ impl PointerHandler for State {
 impl DataDeviceHandler for State {
     fn enter(
         &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlDataDevice,
-        _: f64,
-        _: f64,
-        _: &WlSurface,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        data_device: &WlDataDevice,
+        x: f64,
+        y: f64,
+        surface: &WlSurface,
     ) {
+        #[cfg(feature = "dnd")]
+        {
+            use sctk::data_device_manager::data_device::DataDeviceData;
+            // Get the drag offer from the data device
+            if let Some(offer) = data_device.data::<DataDeviceData>().and_then(|d| d.drag_offer()) {
+                let mime_types: Vec<String> =
+                    offer.with_mime_types(|mimes: &[String]| mimes.to_vec());
+
+                // Store the drag offer state
+                self.current_drag_offer = Some(DragOfferState {
+                    offer: offer.clone(),
+                    mime_types: mime_types.clone(),
+                    x,
+                    y,
+                    surface: surface.clone(),
+                    left: false,
+                });
+
+                // Dispatch enter event
+                handle_dnd_enter(
+                    &self.dnd_sender,
+                    &mut self.dnd_destinations,
+                    surface,
+                    x,
+                    y,
+                    mime_types,
+                );
+
+                // Accept and set preferred action based on registered destination
+                if let Some(rect) = self.dnd_destinations.find_rectangle(surface, x, y) {
+                    // Find a compatible MIME type
+                    if let Some(offer_state) = &self.current_drag_offer {
+                        let compatible_mime = offer_state.mime_types.iter().find(|m| {
+                            rect.mime_types.iter().any(|rm| m.as_str() == rm.as_str())
+                        });
+                        if let Some(mime) = compatible_mime {
+                            offer_state.offer.accept_mime_type(offer_state.offer.serial, Some(mime.clone()));
+                            offer_state.offer.set_actions(rect.actions, rect.preferred);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(feature = "dnd"))]
+        {
+            let _ = (data_device, x, y, surface);
+        }
     }
 
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(ref mut offer_state) = self.current_drag_offer {
+                offer_state.left = true;
+            }
+            handle_dnd_leave(&self.dnd_sender, &mut self.dnd_destinations);
+        }
+    }
 
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
+    fn motion(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _data_device: &WlDataDevice,
+        x: f64,
+        y: f64,
+    ) {
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(ref mut offer_state) = self.current_drag_offer {
+                offer_state.x = x;
+                offer_state.y = y;
 
-    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+                let surface = offer_state.surface.clone();
+                handle_dnd_motion(&self.dnd_sender, &mut self.dnd_destinations, &surface, x, y);
+
+                // Update accepted MIME type and actions based on new position
+                if let Some(rect) = self.dnd_destinations.find_rectangle(&surface, x, y) {
+                    let compatible_mime = offer_state.mime_types.iter().find(|m| {
+                        rect.mime_types.iter().any(|rm| m.as_str() == rm.as_str())
+                    });
+                    if let Some(mime) = compatible_mime {
+                        offer_state.offer.accept_mime_type(offer_state.offer.serial, Some(mime.clone()));
+                        offer_state.offer.set_actions(rect.actions, rect.preferred);
+                    } else {
+                        offer_state.offer.accept_mime_type(offer_state.offer.serial, None);
+                    }
+                } else {
+                    offer_state.offer.accept_mime_type(offer_state.offer.serial, None);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "dnd"))]
+        {
+            let _ = (x, y);
+        }
+    }
+
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        #[cfg(feature = "dnd")]
+        {
+            handle_dnd_drop(&self.dnd_sender, &self.dnd_destinations);
+        }
+    }
 
     // The selection is finished and ready to be used.
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
@@ -470,31 +738,109 @@ impl DataSourceHandler for State {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlDataSource,
+        source: &WlDataSource,
         mime: String,
         write_pipe: WritePipe,
     ) {
+        // Check if this is a DnD source or a clipboard source
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(ref dnd_source) = self.dnd_source {
+                if dnd_source.inner() == source {
+                    // This is a DnD source - send the DnD data
+                    if let Some(ref dnd_data) = self.dnd_source_data {
+                        if dnd_data.mime_types.contains(&mime) {
+                            // Mark FD as non-blocking
+                            if set_non_blocking(write_pipe.as_raw_fd()).is_ok() {
+                                let data: Rc<[u8]> = Rc::from(dnd_data.data.clone().into_boxed_slice());
+                                let mut written = 0;
+                                let _ = self.loop_handle.insert_source(
+                                    write_pipe,
+                                    move |_, file, _| {
+                                        let file = unsafe { file.get_mut() };
+                                        loop {
+                                            match file.write(&data[written..]) {
+                                                Ok(n) if written + n == data.len() => {
+                                                    break PostAction::Remove;
+                                                },
+                                                Ok(n) => written += n,
+                                                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                                                    break PostAction::Continue;
+                                                },
+                                                Err(_) => break PostAction::Remove,
+                                            }
+                                        }
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        // Otherwise handle as clipboard
         self.send_request(SelectionTarget::Clipboard, write_pipe, mime)
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, deleted: &WlDataSource) {
-        self.data_sources.retain(|source| source.inner() != deleted)
+        self.data_sources.retain(|source| source.inner() != deleted);
+
+        #[cfg(feature = "dnd")]
+        {
+            if let Some(ref dnd_source) = self.dnd_source {
+                if dnd_source.inner() == deleted {
+                    handle_source_cancelled(&self.dnd_sender);
+                    self.dnd_source = None;
+                    self.dnd_source_data = None;
+                }
+            }
+        }
     }
 
     fn accept_mime(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &WlDataSource,
-        _: Option<String>,
+        _source: &WlDataSource,
+        mime: Option<String>,
     ) {
+        #[cfg(feature = "dnd")]
+        {
+            handle_source_mime(&self.dnd_sender, mime);
+        }
+        #[cfg(not(feature = "dnd"))]
+        {
+            let _ = mime;
+        }
     }
 
-    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        #[cfg(feature = "dnd")]
+        {
+            handle_source_dropped(&self.dnd_sender);
+        }
+    }
 
-    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, action: DndAction) {
+        #[cfg(feature = "dnd")]
+        {
+            handle_source_action(&self.dnd_sender, action);
+        }
+        #[cfg(not(feature = "dnd"))]
+        {
+            let _ = action;
+        }
+    }
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _source: &WlDataSource) {
+        #[cfg(feature = "dnd")]
+        {
+            handle_source_finished(&self.dnd_sender);
+            self.dnd_source = None;
+            self.dnd_source_data = None;
+        }
+    }
 }
 
 impl DataOfferHandler for State {
@@ -502,18 +848,27 @@ impl DataOfferHandler for State {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &mut DragOffer,
-        _: DndAction,
+        _offer: &mut DragOffer,
+        _actions: DndAction,
     ) {
+        // Source actions received - we could filter the actions we accept here
     }
 
     fn selected_action(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &mut DragOffer,
-        _: DndAction,
+        _offer: &mut DragOffer,
+        action: DndAction,
     ) {
+        #[cfg(feature = "dnd")]
+        {
+            handle_dnd_selected_action(&self.dnd_sender, &self.dnd_destinations, action);
+        }
+        #[cfg(not(feature = "dnd"))]
+        {
+            let _ = action;
+        }
     }
 }
 

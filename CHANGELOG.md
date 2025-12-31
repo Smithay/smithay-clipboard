@@ -1,5 +1,10 @@
 # Change Log
 
+## Unreleased
+
+- Added Wayland drag-and-drop (DnD) support
+- Added custom mime types and more mime type support
+
 ## 0.7.3
 
 - Update SCTK to 0.20

@@ -67,8 +67,71 @@ pub enum Command {
     GetMimeTypes,
     /// Get available MIME types from primary selection.
     GetPrimaryMimeTypes,
+    /// DnD request (only with "dnd" feature).
+    #[cfg(feature = "dnd")]
+    Dnd(DndCommand),
     /// Shutdown the worker.
     Exit,
+}
+
+/// DnD-specific commands (only available with the "dnd" feature).
+#[cfg(feature = "dnd")]
+pub enum DndCommand {
+    /// Initialize DnD with the event sender.
+    InitDnd(Box<dyn crate::dnd::Sender<sctk::reexports::client::protocol::wl_surface::WlSurface> + Send>),
+    /// Register a surface for DnD destination.
+    RegisterDestination {
+        /// The surface to register.
+        surface: sctk::reexports::client::protocol::wl_surface::WlSurface,
+        /// The destination rectangles.
+        rectangles: Vec<crate::dnd::DndDestinationRectangle>,
+    },
+    /// Start a DnD operation.
+    StartDnd {
+        /// The source surface.
+        source: sctk::reexports::client::protocol::wl_surface::WlSurface,
+        /// The data to drag.
+        data: crate::dnd::DndData,
+        /// Allowed actions.
+        actions: sctk::reexports::client::protocol::wl_data_device_manager::DndAction,
+        /// Optional icon surface.
+        icon: Option<sctk::reexports::client::protocol::wl_surface::WlSurface>,
+    },
+    /// End the current DnD operation.
+    EndDnd,
+    /// Set the DnD action.
+    SetAction(sctk::reexports::client::protocol::wl_data_device_manager::DndAction),
+    /// Peek at the DnD offer data.
+    Peek(String),
+    /// Finish the DnD operation (accept the drop).
+    Finish,
+}
+
+#[cfg(feature = "dnd")]
+impl std::fmt::Debug for DndCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InitDnd(_) => f.debug_tuple("InitDnd").finish(),
+            Self::RegisterDestination { surface, rectangles } => {
+                f.debug_struct("RegisterDestination")
+                    .field("surface", surface)
+                    .field("rectangles", rectangles)
+                    .finish()
+            }
+            Self::StartDnd { source, data, actions, icon } => {
+                f.debug_struct("StartDnd")
+                    .field("source", source)
+                    .field("data", data)
+                    .field("actions", actions)
+                    .field("icon", icon)
+                    .finish()
+            }
+            Self::EndDnd => write!(f, "EndDnd"),
+            Self::SetAction(action) => f.debug_tuple("SetAction").field(action).finish(),
+            Self::Peek(mime) => f.debug_tuple("Peek").field(mime).finish(),
+            Self::Finish => write!(f, "Finish"),
+        }
+    }
 }
 
 /// Reply from the clipboard worker.
@@ -181,6 +244,34 @@ fn worker_impl(connection: Connection, rx_chan: Channel<Command>, reply_tx: Send
                             let _ = state
                                 .reply_tx
                                 .send(Err(ClipboardError::PrimarySelectionUnsupported));
+                        }
+                    },
+                    #[cfg(feature = "dnd")]
+                    Command::Dnd(dnd_cmd) => {
+                        match dnd_cmd {
+                            DndCommand::InitDnd(sender) => {
+                                state.init_dnd(sender);
+                            },
+                            DndCommand::RegisterDestination { surface, rectangles } => {
+                                state.register_dnd_destination(surface, rectangles);
+                            },
+                            DndCommand::StartDnd { source, data, actions, icon } => {
+                                let _ = state.start_dnd(&source, data, actions, icon.as_ref());
+                            },
+                            DndCommand::EndDnd => {
+                                state.end_dnd();
+                            },
+                            DndCommand::SetAction(action) => {
+                                state.set_dnd_action(action);
+                            },
+                            DndCommand::Peek(mime_type) => {
+                                if let Err(err) = state.peek_dnd_offer(&mime_type) {
+                                    let _ = state.reply_tx.send(Err(err));
+                                }
+                            },
+                            DndCommand::Finish => {
+                                state.finish_dnd();
+                            },
                         }
                     },
                     Command::Exit => state.exit = true,

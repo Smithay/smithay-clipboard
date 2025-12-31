@@ -51,6 +51,8 @@ use sctk::reexports::client::Connection;
 use sctk::reexports::client::backend::Backend;
 
 mod data;
+#[cfg(feature = "dnd")]
+pub mod dnd;
 pub mod error;
 pub mod mime;
 mod state;
@@ -61,11 +63,17 @@ pub use error::{ClipboardError, Result};
 
 use worker::{Command, Reply};
 
+#[cfg(feature = "dnd")]
+use worker::DndCommand;
+
 /// Access to a Wayland clipboard.
 pub struct Clipboard {
     request_sender: Sender<Command>,
     request_receiver: Receiver<Result<Reply>>,
     clipboard_thread: Option<std::thread::JoinHandle<()>>,
+    #[cfg(feature = "dnd")]
+    #[allow(dead_code)]
+    connection: Connection,
 }
 
 impl Clipboard {
@@ -86,11 +94,16 @@ impl Clipboard {
         let (clipboard_reply_sender, request_receiver) = mpsc::channel();
 
         let name = String::from("smithay-clipboard");
-        let clipboard_thread = worker::spawn(name, connection, rx_chan, clipboard_reply_sender);
+        let clipboard_thread = worker::spawn(name, connection.clone(), rx_chan, clipboard_reply_sender);
 
-        Self { request_receiver, request_sender, clipboard_thread }
+        Self {
+            request_receiver,
+            request_sender,
+            clipboard_thread,
+            #[cfg(feature = "dnd")]
+            connection,
+        }
     }
-
     // ========================================================================
     // Generic API
     // ========================================================================
@@ -276,6 +289,119 @@ impl Clipboard {
     pub fn store_text_primary(&self, text: impl AsRef<str>) {
         self.store_primary(text.as_ref().as_bytes(), &mime::TEXT_MIME_TYPES);
     }
+
+    // ========================================================================
+    // DnD (Drag and Drop) API - only available with the "dnd" feature
+    // ========================================================================
+
+    /// Initialize DnD with an event sender.
+    ///
+    /// Call this once to receive DnD events through the provided sender.
+    /// Events will be sent as [`dnd::DndEvent`] through the channel.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use sctk::reexports::calloop::channel;
+    /// # let clipboard: smithay_clipboard::Clipboard = todo!();
+    ///
+    /// let (sender, _receiver) = channel::channel();
+    /// clipboard.init_dnd(Box::new(sender));
+    /// ```
+    #[cfg(feature = "dnd")]
+    pub fn init_dnd(
+        &self,
+        sender: Box<dyn dnd::Sender<sctk::reexports::client::protocol::wl_surface::WlSurface> + Send>,
+    ) {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::InitDnd(sender)));
+    }
+
+    /// Register a surface for receiving DnD offers.
+    ///
+    /// Rectangles define the drop target areas within the surface. They should
+    /// be provided in order of decreasing priority. This method can be called
+    /// multiple times for a single surface if the rectangles change.
+    ///
+    /// Call with an empty rectangles list to unregister the surface.
+    #[cfg(feature = "dnd")]
+    pub fn register_dnd_destination(
+        &self,
+        surface: sctk::reexports::client::protocol::wl_surface::WlSurface,
+        rectangles: Vec<dnd::DndDestinationRectangle>,
+    ) {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::RegisterDestination {
+            surface,
+            rectangles,
+        }));
+    }
+
+    /// Start a DnD operation on the given surface with some data.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The surface where the drag originates
+    /// * `data` - The data to be dragged
+    /// * `actions` - Allowed DnD actions (Copy, Move, Ask, etc.)
+    /// * `icon` - Optional icon surface to display during drag
+    #[cfg(feature = "dnd")]
+    pub fn start_dnd(
+        &self,
+        source: sctk::reexports::client::protocol::wl_surface::WlSurface,
+        data: dnd::DndData,
+        actions: sctk::reexports::client::protocol::wl_data_device_manager::DndAction,
+        icon: Option<sctk::reexports::client::protocol::wl_surface::WlSurface>,
+    ) {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::StartDnd {
+            source,
+            data,
+            actions,
+            icon,
+        }));
+    }
+
+    /// End the current DnD operation.
+    ///
+    /// Call this to cancel an ongoing drag operation.
+    #[cfg(feature = "dnd")]
+    pub fn end_dnd(&self) {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::EndDnd));
+    }
+
+    /// Set the final action after the user made a choice.
+    ///
+    /// This should be called when the selected action is `Ask` and the user
+    /// has been presented with a choice of actions.
+    #[cfg(feature = "dnd")]
+    pub fn set_dnd_action(
+        &self,
+        action: sctk::reexports::client::protocol::wl_data_device_manager::DndAction,
+    ) {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::SetAction(action)));
+    }
+
+    /// Peek at the contents of a DnD offer.
+    ///
+    /// This allows reading the drag data before the drop is performed.
+    /// Returns the data for the specified MIME type.
+    #[cfg(feature = "dnd")]
+    pub fn peek_dnd_offer(&self, mime_type: &str) -> Result<ClipboardData> {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::Peek(mime_type.to_string())));
+
+        match self.request_receiver.recv() {
+            Ok(Ok(Reply::Data(data))) => Ok(data),
+            Ok(Ok(_)) => Err(ClipboardError::Empty),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(ClipboardError::WorkerDead),
+        }
+    }
+
+    /// Finish the DnD operation (accept the dropped data).
+    ///
+    /// Call this after receiving `OfferEvent::Drop` to complete the operation.
+    #[cfg(feature = "dnd")]
+    pub fn finish_dnd(&self) {
+        let _ = self.request_sender.send(Command::Dnd(DndCommand::Finish));
+    }
 }
 
 impl Drop for Clipboard {
@@ -287,3 +413,4 @@ impl Drop for Clipboard {
         }
     }
 }
+

@@ -13,11 +13,15 @@ rust-version = "1.85.0"
 [dependencies]
 libc = "0.2.149"
 sctk = { package = "smithay-client-toolkit", version = "0.20.0", default-features = false, features = ["calloop"] }
+thiserror = "2.0"
 wayland-backend = { version = "0.3.5", default-features = false, features = ["client_system"] }
+raw-window-handle = { version = "0.6", optional = true }
 
 [dev-dependencies]
 sctk = { package = "smithay-client-toolkit", version = "0.20.0", default-features = false, features = ["calloop", "xkbcommon"] }
 
 [features]
-default = ["dlopen"]
-dlopen = ["wayland-backend/dlopen" ]
+default = ["dlopen", "dnd", "rwh-6"]
+rwh-6 = ["raw-window-handle"]
+dnd = []
+dlopen = ["wayland-backend/dlopen"]

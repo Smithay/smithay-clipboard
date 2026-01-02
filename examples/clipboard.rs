@@ -42,7 +42,7 @@ fn main() {
     let surface = compositor.create_surface(&queue_handle);
     let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &queue_handle);
 
-    window.set_title(String::from("smithay-clipboard example. Press C/c/P/p to copy/paste"));
+    window.set_title(String::from("smithay-clipboard example. Press C/c/P/p to copy/paste, m for MIME types, i for image, h for HTML"));
     window.set_min_size(Some((MIN_DIM_SIZE as u32, MIN_DIM_SIZE as u32)));
     window.commit();
 
@@ -295,26 +295,55 @@ impl KeyboardHandler for SimpleWindow {
     ) {
         match event.utf8.as_deref() {
             // Paste primary.
-            Some("P") => match self.clipboard.load_primary() {
+            Some("P") => match self.clipboard.load_text_primary() {
                 Ok(contents) => println!("Paste from primary clipboard: {contents}"),
                 Err(err) => eprintln!("Error loading from primary clipboard: {err}"),
             },
             // Paste clipboard.
-            Some("p") => match self.clipboard.load() {
+            Some("p") => match self.clipboard.load_text() {
                 Ok(contents) => println!("Paste from clipboard: {contents}"),
                 Err(err) => eprintln!("Error loading from clipboard: {err}"),
             },
             // Copy primary.
             Some("C") => {
                 let to_store = "Copy primary";
-                self.clipboard.store_primary(to_store);
+                self.clipboard.store_text_primary(to_store);
                 println!("Copied string into primary clipboard: {}", to_store);
             },
             // Copy clipboard.
             Some("c") => {
                 let to_store = "Copy";
-                self.clipboard.store(to_store);
+                self.clipboard.store_text(to_store);
                 println!("Copied string into clipboard: {}", to_store);
+            },
+            // List available MIME types.
+            Some("m") => match self.clipboard.available_mime_types() {
+                Ok(types) => println!("Available MIME types: {:?}", types),
+                Err(err) => eprintln!("Error getting MIME types: {err}"),
+            },
+            // Try to load image (PNG or JPEG).
+            Some("i") => {
+                use smithay_clipboard::mime::image;
+                match self.clipboard.load(&[image::PNG, image::JPEG]) {
+                    Ok(data) => {
+                        println!(
+                            "Loaded image: mime={}, size={} bytes",
+                            data.mime_type,
+                            data.data.len()
+                        );
+                    },
+                    Err(err) => eprintln!("Error loading image: {err}"),
+                }
+            },
+            // Try to load HTML.
+            Some("h") => {
+                use smithay_clipboard::mime::text;
+                match self.clipboard.load(&[text::HTML]) {
+                    Ok(data) => {
+                        println!("Loaded HTML: {}", data.to_text_lossy());
+                    },
+                    Err(err) => eprintln!("Error loading HTML: {err}"),
+                }
             },
             _ => (),
         }
